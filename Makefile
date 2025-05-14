@@ -4,10 +4,10 @@ PROJECT_VERSION = 0.0.1
 
 DEPS = erlbox
 
-dep_erlbox = git git@github.com:erlmachinedev/erlbox.git
+dep_erlbox = git https://github.com/erlmachinedev/erlbox.git
 
 TEST_DEPS = meck
 
-dep_meck = git git@github.com:eproxus/meck.git
+dep_meck = git https://github.com/eproxus/meck.git
 
 include erlang.mk
