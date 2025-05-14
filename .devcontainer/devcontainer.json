@@ -1,0 +1,16 @@
+{
+	"name": "Erlang",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": {
+			"VARIANT": "27.2.0.0-alpine"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"pgourlain.erlang"
+			]
+		}
+	}
+}
