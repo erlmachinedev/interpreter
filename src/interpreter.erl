@@ -1,129 +1,258 @@
 -module(interpreter).
 
--import(erl_syntax, [module_qualifier/2, application/2]).
+%% Lua 5.2 interpreter to embed in ERTS 
+-callback eval(command(), line(), meta(), graph()) -> lua().
 
--import(erl_syntax, [atom/1]).
--import(erl_syntax, [list/2]).
--import(erl_syntax, [string/1]).
+-export([compile/2]).
 
--import(erl_syntax, [revert/1]).
+-type command() :: function().
 
--import(erlbox, [success/0, success/1, success/2]).
+-type graph() :: term().
 
--export([parse/1]).
-
--export([exec/1, exec/2, exec/3]).
-
--export([eval/1]).
--export([eval/2]).
--export([eval/3]).
-
--include_lib("erlbox/include/erlbox.hrl").
+-type lua() :: 'nil' | boolean() | function() | binary() | number() | graph().
 
 -type code() :: string().
+-type line() :: non_neg_integer().
 
--type env() :: map().
+-type meta() :: [term()].
 
--type return(Res, Env) :: {value, Res, Env}.
+-type program() :: fun((graph()) -> lua()).
 
--type filename() :: file:filename().
+%% Interpreter API
 
-%% TODO Introduce Lua datatype
+%% TODO demo API to show VM internals (Erlang version, processes, etc.)
+%% TODO Introduce Backend API (application:set_env/3, application:get_env/2)
+%% TODO module:interrupt(Class, Reason, Stacktrace) via erlang:raise/3, try .. catch
+%% TODO module:ipars/1, module:pairs/1, module:next/1
+%% 
+%% TODO Control structures - https://www.lua.org/pil/4.3.html 
+%% 
+%% TODO Graph is made via init API which creates _G table 
+%% 
+%% TODO Break, Label and Goto can be implemented with the help of Tree argument
+%% TODO local variables can be implemented as Labels on a Graph
+%% TODO Fix Grammar rule (reduce conflicts)
+-spec compile(module(), code()) -> program().
+compile(Module, Code) ->
+    Tree = interpreter_parse:process(_Scan = interpreter_scan:process(Code)),
 
--spec parse(code()) -> term().
-parse(Code) ->
-    Res = interpreter_parse:process(_ = interpreter_scan:process(Code)),
+    _Program = chunk(Module, Tree).
+
+assert(Exp, Graph) ->
+    Bool = Exp(Graph),
+
+    if ((Bool == false) orelse (Bool == 'nil')) ->
+        false;
+    true ->
+        true
+    end.
+
+assert(Exp, Body, Graph) ->
+    Bool = assert(Exp, Graph),
+
+    if Bool ->
+        Body(Graph);
+    true ->
+        false
+    end.
+
+assert(Value, Exp, Body, Graph) ->
+    Bool = assert(Exp, Graph),
+
+    if Bool == Value ->
+        true;
+    true ->
+        Body(Graph)
+    end.
+
+assign(_Op1, _Op2, _Graph) ->
+    %% TODO Implement assign in order to make test passed
+    %% TODO Implement list
+    ok.
+
+%% TODO Inspect supported operators list
+binop(Op, L, R, _Graph) ->
+    erlang:Op(L, R).
+
+%% TODO Inspect supported operators list
+unop(Op, R, _Graph) ->
+    erlang:Op(R).
+
+%% TODO Lang specification: https://www.lua.org/manual/5.1/manual.html
+%% 
+%% TODO eval(Command, Line, Meta) -> Command(Graph)
+
+chunk(Module, Tree) ->
+    %% TODO System wide procedures to embed (non-local API)
+    fun (Graph) -> 
+        (_Program = block(Module, Tree))(Graph)
+    end.
+
+ %% TODO Handle ;
+block(Module, Tree) ->
+    fun (Graph) -> 
+        (_Program = stats(Module, Tree))(Graph) 
+    end.
+
+stats(_Module, []) ->
+    fun (Graph) -> 
+        (_Command = fun (_) -> 'nil' end)(Graph)
+    end;
+
+stats(Module, [Node]) ->
+    fun (Graph) -> 
+        (_Command = retstat(Module, Node))(Graph)
+    end;
+
+stats(Module, [Node|Tree]) ->
+    fun (Graph) -> 
+        (_Command = stat(Module, Node))(Graph),
+        (_Program = stats(Module, Tree))(Graph) end.
+
+stat(Module, {_Tag = 'assign', Line, Node1, Node2}) ->
+    Command = fun (Graph) -> 
+        Vars = (explist(Module, Node1))(Graph),
+        Vals = (explist(Module, Node2))(Graph),
+
+        io:format(user, "= (E1 ~p E2 ~p)", [Vars, Vals]) end,
+
+    eval(Module, Command, ['='], Line);
+
+stat(Module, {_Tag = 'elseif', Line, Node1, Node2, Node3}) ->
+    Command = fun (Graph) -> 
+        io:format(user, "elseif Node1: ~p~n", [Node1]),
+        io:format(user, "elseif Node2: ~p~n", [Node2]),
+        io:format(user, "elseif Node3: ~p~n", [Node3]),
+
+        IfBody = block(Module, Node2),
+
+        Bool = assert(_If = exp(Module, Node1), IfBody, Graph),
+
+        if Bool ->
+                true;
+           true ->
+                assert(_Else = stat(Module, Node3), Graph)
+        end end,
+
+    eval(Module, Command, ['elseif'], Line);
+
+stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3, Node4}) ->
+    Command = fun (Graph) -> 
+
+        io:format(user, "if Node1: ~p~n", [Node1]),
+        io:format(user, "if Node2: ~p~n", [Node2]),
+        io:format(user, "if Node3: ~p~n", [Node3]),
+        io:format(user, "if Node4: ~p~n", [Node4]),
+
+        IfBody = block(Module, Node2),
+                             
+        Bool = assert(_If = exp(Module, Node1), IfBody, Graph),
+
+        if Bool ->
+                true;
+           true ->
+                ElseBody = block(Module, Node4),
+
+                assert(false, _Else = stat(Module, Node3), ElseBody, Graph)
+        end end,
+
+    eval(Module, Command, ['if'], Line);
+
+stat(Module, {_Tag = 'else', Line, Node1}) ->
+    Command = fun (Graph) -> 
+        io:format(user, "else Node1: ~p~n", [Node1]),
+
+        (_Body = block(Module, Node1))(Graph) end,
+
+    eval(Module, Command, ['else'], Line);
+
+stat(Module, {_Tag = 'while', Line, Node1, Node2}) ->
+    Command = fun (Graph) -> 
+
+        Body = block(Module, Node2),
+
+        (fun F() -> 
+            Res = assert(_Cond = exp(Module, Node1), Graph),
+                             
+            if Res -> 
+                Body(Graph),
+                F();
+                true -> 
+                    'nil' 
+            end 
+        end)(Graph) end,
+
+    eval(Module, Command, ['while', 'do', 'end'], Line).
+
+retstat(Module, {return, Line, Node1}) ->
+    Command = fun (Graph) -> 
+        (explist(Module, Node1))(Graph) end,
     
-    translate(Res).
+    eval(Module, Command, ['return'], Line);
 
-translate(Code) ->
-    io:format(user, "Code: ~tp~n", [Code]),
+retstat(Module, Node1) ->
+    stat(Module, Node1).
+
+explist(Module, [Node]) ->
+    fun (Graph) -> 
+        Val = (_Command = exp(Module, Node))(Graph),
+
+        Res = [Val],
+        Res 
+    end;
+
+explist(Module, [Node|Tree]) ->
+    fun (Graph) -> 
+        Val = (_Command = exp(Module, Node))(Graph), 
     
-    Mod = atom(io),
-    Fun = atom(format),
-    
-    Node = module_qualifier(Mod, Fun),
+        Res = [Val|(_Program = explist(Module, Tree))(Graph)],
+        Res 
+    end.
 
-    Test = string("~tp:~tp(test)~n"),
-    List = list([Mod, Fun], none),
+exp(Module, {_Tag = op, Line, Op, Node1, Node2}) ->
+    Command = fun (Graph) -> 
+        Op1 = (exp(Module, Node1))(Graph),
+        Op2 = (exp(Module, Node2))(Graph),
+                             
+        binop(Op, Op1, Op2, Graph) end,
 
-    Res = application(Node, [_Output = atom(user), Test, List]),
-    
-    revert(Res).
+    eval(Module, Command, [Op], Line);
 
+exp(Module, {_Tag ='NAME', Line, Name}) ->
+    %% TODO Format encode and normalization
+    %% TODO Extract the NAME from Graph
+    Command = fun (_Graph) -> 
+        io:format(user, "var: ~p", [Name]), 
+        %% TODO Debug
+        Res = 1,
+        Res end,
 
-%% NOTE The translation is divided onto terminals and nonterminals parts
-%% NOTE The terminal can call nonterminal and vice versa 
+    eval(Module, Command, ['var', Name], Line);
 
-%% NOTE The each node is represented via application (even terminals)
+exp(_Module, {_Tag = 'LITERALSTRING', _Line, Lit}) ->
+    %% TODO Format encode and normalization
+    fun (_Graph) -> 
+        Lit 
+    end;
 
-statement([], Acc) ->
-    Acc;
+exp(_Module, {_Tag = 'NUMERAL', _Line, Lit}) ->
+    %% TODO Format encode and normalization
+    fun (_Graph) -> 
+        Lit 
+    end;
 
-statement([{_Tag = 'assign', _, Vars, Exps}|T], Acc) ->
-    Namelist = namelist(Vars),
-    
-    
+exp(_Module, {_Tag = nil, _Line}) ->
+    fun (_Graph) -> 
+        'nil' 
+    end;
 
-statement([{_Tag ='NAME', _, Name}|T], Acc)
+%% TODO Fix Lit expression (check the clause for Boolean)
+exp(_Module, Lit) ->
+    io:format(user, "Lit is ~p~n", [Lit]),
+    Lit.
 
-%% Expression API
-
-namelist(List) ->
-    [ Name || {_Tag ='NAME', _, Name} <- List ].
-
-%chunk()
-%block()
-
-%exp()
-
-%var(Name, Env) ->
-%    maps:get(Name, Env, _Default = nil).
-
-%statement() 
-
-%% TODO Dedicated nodes to construct the type
-
-exec(Exp) ->
-    exec(Exp, _Env = #{}).
-
-%% TODO Consider return type name {value, Value, NewBindings} | Value
-
-exec(Exp, Env) ->
-    exec(Exp, Env, _Fun = none).
-
--spec exec(term(), env(), function() | none) -> return(term(), env()).
-exec(Exp, Env, Fun) ->
-    %io:format(user, "~tp ~tp ~tp~n", [Exp, Env, Fun]),
-    %% TODO Indicate error 
-    %% TODO Run the code
-    
-    %% TODO Add ENV to Bindings Var
-    
-    erl_eval:expr(Exp, Env, Fun).
-
-file(Filename) ->
-    {ok, Bin} = erl_prim_loader:read_file(Filename),
-    
-    Res = binary_to_list(Bin),
-    Res.
-
-%% TODO eval returns Value
-
-eval(Filename) ->
-    eval(Filename, _Env = #{}).
-
-eval(Filename, Env) ->
-    eval(Filename, Env, _Fun = none).
-
--spec eval(filename(), env(), function() | none) -> return(term(), env()).
-eval(Filename, Env, Fun) ->
-    Code = file(Filename),
-    
-    exec(_Exp = parse(Code), Env, Fun).
-    
-%%% Expression API
-
-%% NOTE The expression should produce runtime error (passing wrong args, etc).
-
-%% NOTE The Fun expression (function declaration) is stored in ENV
+%% API
+eval(Module, Command, Meta, Line) ->
+    fun (Graph) -> 
+        Module:eval(Command, Line, Meta, Graph) 
+    end.

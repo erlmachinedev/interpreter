@@ -104,21 +104,23 @@ repeat_stat -> 'repeat' block 'until' exp : {repeat,line('$1'),'$2','$4'} .
 
 %% stat ::= if exp then block {elseif exp then block} [else block] end
 if_stat -> 'if' exp 'then' block if_elseif if_else 'end' :
-	{'if',line('$1'),[{'$2','$4'}|'$5'],'$6'} .
+	{'if',line('$1'),'$2','$4','$5','$6'} .
 
-if_elseif -> if_elseif 'elseif' exp 'then' block : '$1' ++ [{'$3','$5'}] .
+if_elseif -> 'elseif' exp 'then' block if_elseif: 
+    {'elseif',line('$1'),'$2','$4','$5'} .
 if_elseif -> '$empty' : [] .
 
-if_else -> 'else' block : '$2' .
-if_else -> '$empty' : [] .			%An empty block
+if_else -> 'else' block : 
+    {'else',line('$1'),'$2'} .
+if_else -> '$empty' : [] .
 
 %% stat ::= for Name '=' exp ',' exp [',' exp] do block end
 %% stat ::= for namelist in explist do block end
 
 for_stat -> 'for' NAME '=' explist do block end : 
-	    numeric_for(line('$1'), '$2', '$4', '$6') .
+	    numeric_for(line('$1'),'$2','$4','$6') .
 for_stat -> 'for' namelist 'in' explist 'do' block 'end' :
-	    generic_for(line('$1'), '$2', '$4', '$6') .
+	    generic_for(line('$1'),'$2','$4','$6') .
 
 %% funcname ::= Name {'.' Name} [':' Name]
 
@@ -172,6 +174,7 @@ functioncall -> prefixexp ':' NAME args :
 args -> '(' ')' : [] .
 args -> '(' explist ')' : '$2' .
 args -> tableconstructor : ['$1'] .		%Syntactic sugar
+%% TODO Convert string to binary
 args -> LITERALSTRING : ['$1'] .		%Syntactic sugar
 
 functiondef -> 'function' funcbody : functiondef(line('$1'), '$2').
@@ -186,6 +189,8 @@ parlist -> '...' : ['$1'] .
 tableconstructor -> '{' '}' : {table,line('$1'),[]} .
 tableconstructor -> '{' fieldlist '}' : {table,line('$1'),'$2'} .
 
+%% TODO array and map constructors
+
 fieldlist -> fields : '$1' .
 fieldlist -> fields fieldsep : '$1' .
 
@@ -194,6 +199,7 @@ fields ->  fields fieldsep field : '$1' ++ ['$3'] .
 
 field -> '[' exp ']' '=' exp : {key_field,line('$1'),'$2','$5'} .
 field -> NAME '=' exp : {name_field,line('$1'),'$1','$3'} .
+%% TODO array elements
 field -> exp : {exp_field,line('$1'),'$1'} .
 
 fieldsep -> ',' .
@@ -234,9 +240,11 @@ uminus -> '-' exp : {op,line('$1'),'-','$2'} .
 
 Erlang code.
 
+-include_lib("eunit/include/eunit.hrl").
+
 -export([process/1]).
 
-%% process(Tokens) -> Code.
+process_test() -> ok.
 
 process(Tokens) ->
     case parse(Tokens) of

@@ -138,10 +138,11 @@ Rules.
 
 Erlang code.
 
--export([process/1]).
+-export([process/1, is_keyword/1, string_chars/1, chars/1]).
 
--export([is_keyword/1]).
--export([string_chars/1,chars/1]).
+-include_lib("eunit/include/eunit.hrl").
+
+process_test() -> ok.
 
 process(Code) ->
     case string(Code) of

@@ -1,4 +1,4 @@
--file("/home/ec2-user/.asdf/installs/erlang/26.1.2/lib/parsetools-2.5/include/leexinc.hrl", 0).
+-file("/usr/local/lib/erlang/lib/parsetools-2.6/include/leexinc.hrl", 0).
 %% The source of this file is part of leex distribution, as such it
 %% has the same Copyright as the other files in the leex
 %% distribution. The Copyright is defined in the accompanying file
@@ -14,10 +14,11 @@
 %% User code. This is placed here to allow extra attributes.
 -file("src/interpreter_scan.xrl", 139).
 
--export([process/1]).
+-export([process/1, is_keyword/1, string_chars/1, chars/1]).
 
--export([is_keyword/1]).
--export([string_chars/1,chars/1]).
+-include_lib("eunit/include/eunit.hrl").
+
+process_test() -> ok.
 
 process(Code) ->
     case string(Code) of
@@ -235,7 +236,7 @@ is_keyword(<<"until">>) -> true;
 is_keyword(<<"while">>) -> true;
 is_keyword(_) -> false.
 
--file("/home/ec2-user/.asdf/installs/erlang/26.1.2/lib/parsetools-2.5/include/leexinc.hrl", 14).
+-file("/usr/local/lib/erlang/lib/parsetools-2.6/include/leexinc.hrl", 14).
 
 format_error({illegal,S}) -> ["illegal characters ",io_lib:write_string(S)];
 format_error({user,S}) -> S.
@@ -592,7 +593,7 @@ tab_size() -> 8.
 %% return signal either an unrecognised character or end of current
 %% input.
 
--file("src/interpreter_scan.erl", 560).
+-file("src/interpreter_scan.erl", 561).
 yystate() -> 91.
 
 yystate(94, [45|Ics], Line, Col, Tlen, Action, Alen) ->
@@ -1679,4 +1680,4 @@ yyaction_52() ->
 -file("src/interpreter_scan.xrl", 135).
 yyaction_53() ->
      { error, "unfinished long comment" } .
--file("/home/ec2-user/.asdf/installs/erlang/26.1.2/lib/parsetools-2.5/include/leexinc.hrl", 344).
+-file("/usr/local/lib/erlang/lib/parsetools-2.6/include/leexinc.hrl", 344).

@@ -1,74 +1,53 @@
 -module(interpreter_tests).
 
--import(interpreter, [parse/1]).
-
--import(interpreter, [exec/1, exec/2, exec/3]).
-
--import(interpreter, [eval/1]).
--import(interpreter, [eval/2]).
--import(interpreter, [eval/3]).
+-import(interpreter, [compile/2]).
 
 -export([]).
 
 -include_lib("eunit/include/eunit.hrl").
 
-exec_test_() ->
-    %% TODO Hide warnings from the build
-    %% TODO Read from file (Mock)
+%% TODO Hide warnings from the build
+%% 
+%% TODO debugTime(Text,Expr)
+%% TODO debugVal(Expr, Depth)
+%% TODO assertException(ClassPattern, TermPattern, Expr)
+%% TODO assertMatch(GuardedPattern, Expr)
+%% TODO assertEqual(Expect, Expr)
+%% 
+%% TODO Empty code test
+interpreter_test() ->
+    Module = test,
     
-    %% NOTE Exception Reason -> ct:print(user, "~ts~n", [Reason])
-    
-    [ exception(Code) || Code <- ["№", "1()"] ],
-    
-    [ fun () -> Test = "a = 1;",
+    meck:new(Module, [non_strict]),
 
-                Code = parse(Test),
-                
-                ?debugVal(Code),
-                
-                {value, Res, Env} = interpreter:exec(Code),
-                
-                ?debugVal(Res),
-                ?debugVal(Env)
-                
-                %% TODO eval is placed at the end and validated against exec
-      end,
-      
-      fun () -> Test = "function test (a) return a end",
-      
-                Code = interpreter:parse(Test),
-                
-                ?debugVal(Code),
-                      
-                interpreter:exec(Code)
-      end,
-      
-      fun () -> Test = "function test (a) print (a) end",
-      
-                Code = interpreter:parse(Test),
-                
-                ?debugVal(Code),
-                      
-                interpreter:exec(Code)
-      end,
-      
-      fun () -> Test = "function test () print (\"ping\") end",
-      
-                Code = interpreter:parse(Test),
-                
-                ?debugVal(Code),
-                      
-                interpreter:exec(Code)
-      end,
-      
-      fun () -> Test = "for i = 15, 1, -1 do break; print (i) end",
-                Code = interpreter:parse(Test),
-      
-                ?debugVal(Code),
-                  
-                interpreter:exec(Code)
-      end
-    ].
-    
-exception(Code) ->
-    {_, {_Reason, _Stacktrace}} = catch(parse(Code)).
+    meck:expect(Module, eval, fun eval/4),
+
+    Tree = interpreter_parse:process(_Scan = interpreter_scan:process(read_file())),
+
+    ?debugVal(Tree, _Depth = 1000),
+
+    Program = compile(Module, _Code = read_file()),
+
+    Program(_Graph = digraph:new()).
+
+
+filename() ->
+    Dir = code:priv_dir(_Name = interpreter),
+
+    [Filename|_] = filelib:wildcard("*.lua", Dir),
+
+    filename:join(Dir, Filename).
+
+read_file() ->    
+    {ok, Code} = erl_prim_loader:read_file(_Filename = filename()),
+
+    Res = binary_to_list(Code),
+    Res.
+
+eval(Command, Line, Meta, Graph) ->
+    ?debugVal(Command),
+    ?debugVal(Line),
+    ?debugVal(Meta),
+    ?debugVal(Graph),
+
+    _Res = Command(Graph).

@@ -1,0 +1,15 @@
+{
+    "editor.fontFamily": "'Monaspace Neon', monospace",
+    "editor.inlineSuggest.fontFamily": "'Monaspace Krypton', monospace",
+    "editor.fontLigatures": "'calt', 'liga', 'ss01', 'ss02', 'ss03', 'ss04', 'ss05', 'ss06', 'ss07', 'ss08', 'ss09'",
+    "editor.fontSize": 12.5,
+
+    "files.associations": {
+        "**/priv/*": "lua",
+        "*.yrl": "lua",
+        "*.xrl": "lua"
+      },
+
+    "terminal.integrated.scrollback": 100000
+    
+}
