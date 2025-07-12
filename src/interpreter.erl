@@ -7,9 +7,11 @@
 
 -type command() :: function().
 
--type graph() :: term().
+-type table() :: function().
 
--type lua() :: 'nil' | boolean() | function() | binary() | number() | graph().
+-type lua() :: 'nil' | boolean() | function() | binary() | number() | table().
+
+-type graph() :: term().
 
 -type code() :: string().
 -type line() :: non_neg_integer().
@@ -20,8 +22,11 @@
 
 %% Interpreter API
 
-%% TODO demo API to show VM internals (Erlang version, processes, etc.)
-%% TODO Introduce Backend API (application:set_env/3, application:get_env/2)
+%% TODO Lang specification: https://www.lua.org/manual/5.1/manual.html
+%% 
+%% TODO API to show VM internals (Erlang version, processes, etc.)
+%% TODO API to configure ERTS (application:set_env/3, application:get_env/2)
+%% TODO API to expose table (lazy evaluated functional object)
 %% TODO module:interrupt(Class, Reason, Stacktrace) via erlang:raise/3, try .. catch
 %% TODO module:ipars/1, module:pairs/1, module:next/1
 %% 
@@ -29,7 +34,7 @@
 %% 
 %% TODO Graph is made via init API which creates _G table 
 %% 
-%% TODO Break, Label and Goto can be implemented with the help of Tree argument
+%% TODO Break, Label and Goto can be implemented with the help of Tree enclosure
 %% TODO local variables can be implemented as Labels on a Graph
 %% TODO Fix Grammar rule (reduce conflicts)
 -spec compile(module(), code()) -> program().
@@ -38,8 +43,8 @@ compile(Module, Code) ->
 
     _Program = chunk(Module, Tree).
 
-assert(Exp, Graph) ->
-    Bool = Exp(Graph),
+assert(If, Graph) ->
+    Bool = If(Graph),
 
     if ((Bool == false) orelse (Bool == 'nil')) ->
         false;
@@ -47,22 +52,40 @@ assert(Exp, Graph) ->
         true
     end.
 
-assert(Exp, Body, Graph) ->
-    Bool = assert(Exp, Graph),
+assert(If, IfBody, Graph) ->
+    Bool = assert(If, Graph),
 
     if Bool ->
-        Body(Graph);
+        IfBody(Graph);
     true ->
         false
     end.
 
-assert(Value, Exp, Body, Graph) ->
-    Bool = assert(Exp, Graph),
+assert(If, IfBody, Else, Graph) ->
+    Bool = assert(If, Graph),
 
-    if Bool == Value ->
+    if Bool ->
+        IfBody(Graph);
+    true ->
+        assert(Else, Graph)
+    end.
+
+assert(If, IfBody, Else, ElseBody, Graph) ->
+    Bool = assert(If, IfBody, Graph),
+
+    if Bool ->
         true;
     true ->
-        Body(Graph)
+        assert(Else, ElseBody, Graph)
+    end.
+
+repeat(Condition, Body, Graph) ->
+    Bool = assert(Condition, Body, Graph),
+
+    if Bool ->
+        repeat(Condition, Body, Graph);
+    true ->
+        false 
     end.
 
 assign(_Op1, _Op2, _Graph) ->
@@ -78,12 +101,8 @@ binop(Op, L, R, _Graph) ->
 unop(Op, R, _Graph) ->
     erlang:Op(R).
 
-%% TODO Lang specification: https://www.lua.org/manual/5.1/manual.html
-%% 
-%% TODO eval(Command, Line, Meta) -> Command(Graph)
-
 chunk(Module, Tree) ->
-    %% TODO System wide procedures to embed (non-local API)
+    %% TODO System wide commands to embed into the program (non-local API)
     fun (Graph) -> 
         (_Program = block(Module, Tree))(Graph)
     end.
@@ -107,54 +126,70 @@ stats(Module, [Node]) ->
 stats(Module, [Node|Tree]) ->
     fun (Graph) -> 
         (_Command = stat(Module, Node))(Graph),
-        (_Program = stats(Module, Tree))(Graph) end.
+        (_Program = stats(Module, Tree))(Graph) 
+    end.
 
 stat(Module, {_Tag = 'assign', Line, Node1, Node2}) ->
     Command = fun (Graph) -> 
         Vars = (explist(Module, Node1))(Graph),
         Vals = (explist(Module, Node2))(Graph),
 
-        io:format(user, "= (E1 ~p E2 ~p)", [Vars, Vals]) end,
+        io:format(user, "~p = ~p", [Vars, Vals]) end,
 
     eval(Module, Command, ['='], Line);
 
+stat(Module, {_Tag = 'elseif', Line, Node1, Node2}) ->
+    Command = fun (Graph) -> 
+        io:format(user, "elseif Node1: ~p~n", [Node1]),
+        io:format(user, "elseif Node2: ~p~n", [Node2]),
+
+        If = exp(Module, Node1),
+
+        assert(If, _IfBody = block(Module, Node2), Graph) end,
+
+    eval(Module, Command, ['elseif'], Line);
+
+%% TODO Rewrite onto single line assert
 stat(Module, {_Tag = 'elseif', Line, Node1, Node2, Node3}) ->
     Command = fun (Graph) -> 
         io:format(user, "elseif Node1: ~p~n", [Node1]),
         io:format(user, "elseif Node2: ~p~n", [Node2]),
         io:format(user, "elseif Node3: ~p~n", [Node3]),
 
+        If = exp(Module, Node1),
         IfBody = block(Module, Node2),
 
-        Bool = assert(_If = exp(Module, Node1), IfBody, Graph),
-
-        if Bool ->
-                true;
-           true ->
-                assert(_Else = stat(Module, Node3), Graph)
-        end end,
+        assert(If, IfBody, _Else = stat(Module, Node3), Graph) end,
 
     eval(Module, Command, ['elseif'], Line);
 
+stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3}) ->
+    Command = fun (Graph) -> 
+        io:format(user, "if Node1: ~p~n", [Node1]),
+        io:format(user, "if Node2: ~p~n", [Node2]),
+        io:format(user, "if Node3: ~p~n", [Node3]),
+
+        If = exp(Module, Node1),
+        IfBody = block(Module, Node2),
+                             
+        assert(If, IfBody, _ElseBody = block(Module, Node3), Graph) end,
+
+    eval(Module, Command, ['if'], Line);
+
+%% TODO Rewrite onto single line assert
 stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3, Node4}) ->
     Command = fun (Graph) -> 
-
         io:format(user, "if Node1: ~p~n", [Node1]),
         io:format(user, "if Node2: ~p~n", [Node2]),
         io:format(user, "if Node3: ~p~n", [Node3]),
         io:format(user, "if Node4: ~p~n", [Node4]),
 
+        If = exp(Module, Node1),
         IfBody = block(Module, Node2),
+
+        Else = stat(Module, Node3),
                              
-        Bool = assert(_If = exp(Module, Node1), IfBody, Graph),
-
-        if Bool ->
-                true;
-           true ->
-                ElseBody = block(Module, Node4),
-
-                assert(false, _Else = stat(Module, Node3), ElseBody, Graph)
-        end end,
+        assert(If, IfBody, Else, _ElseBody = stat(Module, Node4), Graph) end,
 
     eval(Module, Command, ['if'], Line);
 
@@ -166,22 +201,14 @@ stat(Module, {_Tag = 'else', Line, Node1}) ->
 
     eval(Module, Command, ['else'], Line);
 
+%% TODO Rewrite onto single line assert
 stat(Module, {_Tag = 'while', Line, Node1, Node2}) ->
     Command = fun (Graph) -> 
 
-        Body = block(Module, Node2),
-
-        (fun F() -> 
-            Res = assert(_Cond = exp(Module, Node1), Graph),
+        Condition = exp(Module, Node1),
+        
+        repeat(Condition, _Body = block(Module, Node2), Graph) end,
                              
-            if Res -> 
-                Body(Graph),
-                F();
-                true -> 
-                    'nil' 
-            end 
-        end)(Graph) end,
-
     eval(Module, Command, ['while', 'do', 'end'], Line).
 
 retstat(Module, {return, Line, Node1}) ->
@@ -248,8 +275,12 @@ exp(_Module, {_Tag = nil, _Line}) ->
 
 %% TODO Fix Lit expression (check the clause for Boolean)
 exp(_Module, Lit) ->
-    io:format(user, "Lit is ~p~n", [Lit]),
-    Lit.
+    fun (_Graph) -> 
+        io:format(user, "Lit is ~p~n", [Lit]),
+    
+        Res = Lit,
+        Res 
+    end.
 
 %% API
 eval(Module, Command, Meta, Line) ->

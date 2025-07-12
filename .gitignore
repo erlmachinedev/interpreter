@@ -6,4 +6,7 @@ deps/
 ebin/
 log/
 logs/
+src/interpreter_scan.erl
+src/interpreter_parse.erl
+
 

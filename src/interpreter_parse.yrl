@@ -102,17 +102,18 @@ while_stat -> 'while' exp 'do' block 'end' : {while,line('$1'),'$2','$4'} .
 
 repeat_stat -> 'repeat' block 'until' exp : {repeat,line('$1'),'$2','$4'} .
 
-%% stat ::= if exp then block {elseif exp then block} [else block] end
 if_stat -> 'if' exp 'then' block if_elseif if_else 'end' :
-	{'if',line('$1'),'$2','$4','$5','$6'} .
+    condition('if', line('$1'), '$2', '$4', '$5', '$6') .
 
 if_elseif -> 'elseif' exp 'then' block if_elseif: 
-    {'elseif',line('$1'),'$2','$4','$5'} .
-if_elseif -> '$empty' : [] .
+    condition('elseif', line('$1'), '$2', '$4', '$5') .
+if_elseif -> '$empty' : 
+    [] .
 
 if_else -> 'else' block : 
-    {'else',line('$1'),'$2'} .
-if_else -> '$empty' : [] .
+    {'else', line('$1'), '$2'} .
+if_else -> '$empty' : 
+    [] .
 
 %% stat ::= for Name '=' exp ',' exp [',' exp] do block end
 %% stat ::= for namelist in explist do block end
@@ -141,7 +142,7 @@ varlist -> varlist ',' var : '$1' ++ ['$3'] .
 
 var -> NAME : '$1' .
 var -> prefixexp '[' exp ']' :
-	   dot_append(line('$2'), '$1', {key_field,line('$2'),'$3'}) .
+	   dot_append(line('$2'), '$1', {key_field, line('$2'),'$3'}) .
 var -> prefixexp '.' NAME : dot_append(line('$2'), '$1', '$3') . 
 
 namelist -> NAME : ['$1'] .
@@ -258,39 +259,51 @@ line(T) -> element(2, T).
 %% numeric_for(Line, LoopVar, [Init,Test,Upd], Block).
 
 numeric_for(Line, Var, [Init,Limit], Block) ->
-    {for,Line,Var,Init,Limit,Block};
+    {for, Line, Var, Init, Limit, Block};
 numeric_for(Line, Var, [Init,Limit,Step], Block) ->
-    {for,Line,Var,Init,Limit,Step,Block};
+    {for, Line, Var, Init, Limit, Step, Block};
 numeric_for(Line, _, _, _) ->			%Wrong number of expressions
     return_error(Line, "illegal for").
 
 %% generic_for(Line, Names, ExpList, Block).
 
 generic_for(Line, Names, Exps, Block) ->
-    {for,Line,Names,Exps,Block}.
+    {for, Line, Names, Exps, Block}.
 
 %% functiondef(Line, Name, {Parameters,Body}).
 %% functiondef(Line, {Parameters,Body}).
 
 functiondef(Line, Name, {Pars,Body}) ->
-    {functiondef,Line,Name,Pars,Body}.
+    {functiondef, Line, Name, Pars, Body}.
 
 functiondef(Line, {Pars,Body}) ->
-    {functiondef,Line,Pars,Body}.
+    {functiondef, Line, Pars, Body}.
 
 %% dot_append(Line, DotList, Last) -> DotList.
 %%  Append Last to the end of a dotlist.
 
-dot_append(Line, {'.',L,H,T}, Last) ->
-    {'.',L,H,dot_append(Line, T, Last)};
-dot_append(Line, H, Last) -> {'.',Line,H,Last}.
+dot_append(Line, {'.', L, H, T}, Last) ->
+    {'.', L, H, dot_append(Line, T, Last)};
+dot_append(Line, H, Last) -> {'.', Line, H, Last}.
 
 %% check_functioncall(PrefixExp) -> PrefixExp.
 %%  Check that the PrefixExp is a proper function call/method.
 
-check_functioncall({functioncall,_,_}=C) -> C;
-check_functioncall({methodcall,_,_,_}=M) -> M;
-check_functioncall({'.',L,H,T}) ->
-    {'.',L,H,check_functioncall(T)};
+check_functioncall({functioncall, _, _}=C) -> 
+    C;
+check_functioncall({methodcall, _, _, _}=M) -> 
+    M;
+check_functioncall({'.', L, H, T}) ->
+    {'.', L, H, check_functioncall(T)};
 check_functioncall(Other) ->
-    return_error(line(Other),"illegal call").
+    return_error(line(Other), "illegal call").
+
+condition(Tag = 'if', Line, If, IfBody, _ElseIf = [], ElseBody) ->
+    {Tag, Line, If, IfBody, ElseBody};
+condition(Tag = 'if', Line, If, IfBody, ElseIf, ElseBody) ->
+    {Tag, Line, If, IfBody, ElseIf, ElseBody}.
+
+condition(Tag = 'elseif', Line, If, IfBody, []) ->
+    {Tag, Line, If, IfBody};
+condition(Tag = 'elseif', Line, If, IfBody, ElseIf) ->
+    {Tag, Line, If, IfBody, ElseIf}.
