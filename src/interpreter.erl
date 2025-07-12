@@ -94,6 +94,9 @@ assign(_Op1, _Op2, _Graph) ->
     ok.
 
 %% TODO Inspect supported operators list
+binop('~=', L, R, _Graph) ->
+    erlang:'/='(L, R);
+
 binop(Op, L, R, _Graph) ->
     erlang:Op(L, R).
 
