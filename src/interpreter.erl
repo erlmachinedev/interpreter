@@ -1,31 +1,28 @@
 -module(interpreter).
 
-%% Lua 5.2 interpreter to embed in ERTS 
+%% Lua 5.2 interpreter embedded in ERTS
+ 
+%% TODO Command(_Frame = frame(Ref))
+%% TODO frame(Ref, _Frame = Command())
+%% TODO Consider side effect to be created by scoping
+%% TODO eval can access higher level frame via reference
+-callback eval(command(), reference(), line(), meta()) -> lua().
+%% TODO Ensure the right order eval -> return -> exec (side effects) -> eval
+-callback exec(command(), reference()) -> lua().
+%% TODO Frame commit is to be merged
 
-%% Debug API
--callback eval(command(), line(), meta(), frame()) -> lua().
-%% TODO API (maps compatible) to resolve reference (map/3, fold/4, filter/3, next/2) 
+%% TODO Function call is adopted to return the result enclosure (without side effects)
+%% TODO Consider GC API implemented by embedding app
 
-%% TODO Interpreter crates dedicated frames (scopes) via eval/2
-%% TODO Consider recursive map creation API (maps compatible)
+-export([compile/2, compile/3]).
 
--export([is_key/2, get/2, put/3, iterator/1, next/1]).
-
--export([new/0, new/1, delete/1, info/1]).
-
--export([compile/3]).
-
--type program() :: fun(([lua()]) -> lua()).
-
--type graph() :: digraph:graph().
-
--type frame() :: map().
+-type chunk() :: fun(([lua()]) -> lua()).
 
 -type command() :: function().
 
--type key() :: binary().
-%% TODO reference() does make lua datatype resursive
--type lua() :: 'nil' | boolean() | function() | binary() | number() | reference().
+-type key() :: boolean() | function() | binary() | number().
+
+-type lua() :: key() | reference() | nil().
 
 -type code() :: string().
 -type line() :: non_neg_integer().
@@ -34,15 +31,14 @@
 
 -type iterator() :: function().
 
+
 %% Interpreter API
 
 %% TODO Lang specification: https://www.lua.org/manual/5.1/manual.html
 %% 
-%% TODO API to show VM internals (Erlang version, processes, etc.)
-%% TODO API to configure ERTS (application:set_env/3, application:get_env/2)
-%% 
-%% TODO API (maps compatible) to expose table (lazy evaluated functional object)
-%% TODO API (maps compatible) to expose table (map/3, fold/4, filter/3, next/2) 
+%% TODO Stream based processing
+%% TODO Library API to show VM internals (Erlang version, processes, etc.)
+%% TODO Library API to configure ERTS (application:set_env/3, application:get_env/2)
 %% 
 %% TODO interrupt(Class, Reason, Stacktrace) via erlang:raise/3, try .. catch
 %% TODO Lua API ipars/1, pairs/1, next/1
@@ -59,22 +55,10 @@
 %% TODO Implement lexical scoping via variable Name resolver on a compilation stage
 %% TODO Implement lexical scoping as transient context (Symbol table)
 %% 
-%% TODO Variable names are uniquely resolved at compile time (e.g., transformed into unique IDs or slots)
+%% TODO Variable names are resolved at compile time (e.g., transformed into reference())
 
 %% API
--spec is_key(key(), reference()) -> boolean().
-is_key(_Key, _Ref) ->
-    true.
 
--spec get(key(), reference()) -> lua().
-get(_Key, _Ref) ->
-    ok.
-
--spec put(key(), lua(), reference()) -> reference().
-put(_Key, _Val, _Ref) ->
-    ok.
-
-%% TODO iterator API creates a Fun with enclosure
 -spec iterator(reference()) -> iterator().
 iterator(Ref) ->
     fun () -> 
@@ -85,35 +69,22 @@ iterator(Ref) ->
 next(_I) ->
     none.
 
--spec new(protected | private) -> graph().
-new(Type) when Type == protected;
-               Type == private ->
-    %% TODO Setup environment ("G", etc.) 
-    Res = digraph:new(Type),
-    Res.
+-spec compile(module(), code()) -> chunk().
+compile(Module, Code) ->
+    compile(Module, Code, _Global = global()).
 
--spec new() -> graph().
-new() ->
-    new(_Type = protected).
-
--spec delete(graph()) -> term().
-delete(Graph) ->
-    digraph:delete(Graph).
-
--spec info(graph()) -> [{memory, non_neg_integer()}].
-info(Graph) ->
-    digraph:info(Graph).
-
--spec compile(module(), code(), graph()) -> program().
-compile(Module, Code, _Graph) ->
+-spec compile(module(), code(), map()) -> chunk().
+compile(Module, Code, Global) ->
     Tree = interpreter_parse:process(_Scan = interpreter_scan:process(Code)),
-    fun (Args) ->
-        _Global = setup(Module, Args), 
-        chunk(Module, Tree)
+    fun (Args) -> 
+        chunk(Module, Tree, _Frame = setup(Global, Args))
     end.
 
-setup(Global, _Args) ->
-    Global.
+global() ->
+    _Global = maps:new().
+
+setup(Global, Args) ->
+    maps:put(_Key = <<"arg">>, Args, Global).
 
 assert(If, Frame) ->
     Bool = If(Frame),
@@ -155,7 +126,7 @@ repeat(Condition, Body, Frame) ->
         false 
     end.
 
-%% TODO Var acces is defined on compilation level (local, function args, global)
+%% TODO Var acces in a frame is defined on compilation level (local, function args (), global)
 assign(_Op1, _Op2, _Frame) ->
     %% TODO Implement assign in order to make test passed
     ok.
@@ -179,22 +150,23 @@ function(_Name, _Args, _Body, _Frame) ->
 chunk(Module, Tree) ->
     _Local = [],
     fun (Frame) ->
-        %% TODO Frame check expression (maps:with/2, maps:merge/2)
-        %% TODO Declared vars are merged inside block
-        %% TODO Changed vars are preserved outside block
         %% TODO Variable names are uniquely resolved at compile time (e.g., transformed into unique IDs or slots)
         Frame = (block(Module, Tree))(Frame)
-        %% TODO Variable names are merged (in consecutive calls) or released on return
         %% TODO Inplement frame GC (released variables)
         %% TODO Frame check expression (maps:with/2, maps:merge/2)
     end.
 
  %% TODO Handle ;
 block(Module, Tree) ->
-    _Scope = [],
+    Code = stats(Module, Tree),
     fun (Frame) -> 
+        %% TODO Side effects are evaluated 
+        %% TODO Dedicated node with side effects 
+        %% TODO Side effects applied during the state transition
         %% TODO Frame check expression (maps:with/2, maps:merge/2)
-        Frame = (stats(Module, Tree))(Frame)
+        %% TODO Consider deterministic and repeatable evaluation via Frames (reference by id)
+        Frame = Code(Frame),
+        Eval = compute(Module, Tree)
         %% TODO Frame check expression (maps:with/2, maps:merge/2)
     end.
 
@@ -207,67 +179,66 @@ stats(Module, [Node]) ->
     retstat(Module, Node);
 
 stats(Module, [Node|Tree]) ->
-    %% TODO Scope is computed in GC
-    %% TODO Global is implemented via behaviour
-    %% TODO Variable is made dynamically (created inside frame)
-    %% TODO Scope can be implemented as sliding frame (map) 
-    Execute = stats(Module, Tree),
-    Command = stat(Module, Node),
+    Code = stats(Module, Tree),
+
+    Exec = stat(Module, Node),
     fun (Frame) ->
+        %% TODO Function declaration, Var and Var assignment
         %% TODO Frame check expression (maps:with/2, maps:merge/2)
-        Command(Frame), Execute(Frame)
+        Exec(_Frame = Body(Frame)),
+        Eval = compute(Module, Node)
     end.
 
 stat(Module, {_Tag = 'assign', Line, Node1, Node2}) ->
-    Command = fun () ->
+    Body = fun () ->
         Vars = (explist(Module, Node1))(),
         Vals = (explist(Module, Node2))(),
         io:format(user, "~p = ~p", [Vars, Vals]) end,
-    eval(Module, Command, ['='], Line);
+    command(Module, Body, ['='], Line);
 
 stat(Module, {_Tag = 'elseif', Line, Node1, Node2}) ->
-    Command = fun () ->
+    Body = fun () ->
         If = exp(Module, Node1),
         assert(If, _IfBody = block(Module, Node2)) end,
-    eval(Module, Command, ['elseif'], Line);
+    command(Module, Body, ['elseif'], Line);
 
 stat(Module, {_Tag = 'elseif', Line, Node1, Node2, Node3}) ->
-    Command = fun () ->
+    Body = fun () ->
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         assert(If, IfBody, _Else = stat(Module, Node3)) end,
-    eval(Module, Command, ['elseif'], Line);
+    command(Module, Body, ['elseif'], Line);
 
 stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3}) ->
-    Command = fun () -> 
+    Body = fun () -> 
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         assert(If, IfBody, _ElseBody = block(Module, Node3)) end,
-    eval(Module, Command, ['if'], Line);
+    command(Module, Body, ['if'], Line);
 
 stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3, Node4}) ->
-    Command = fun () -> 
+    Body = fun () -> 
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         Else = stat(Module, Node3),
         assert(If, IfBody, Else, _ElseBody = stat(Module, Node4)) end,
-    eval(Module, Command, ['if'], Line);
+    command(Module, Body, ['if'], Line);
 
 stat(Module, {_Tag = 'else', Line, Node1}) ->
-    Command = fun () -> 
+    Body = fun () -> 
         (block(Module, Node1))() end,
-    eval(Module, Command, ['else'], Line);
+    command(Module, Body, ['else'], Line);
 
 stat(Module, {_Tag = 'while', Line, Node1, Node2}) ->
-    Command = fun (Frame) -> 
+    Body = fun (Frame) -> 
         Condition = exp(Module, Node1),
         repeat(Condition, _Body = block(Module, Node2), Frame) end,
-    eval(Module, Command, ['while', 'do', 'end'], Line).
+    command(Module, Body, ['while', 'do', 'end'], Line).
 
 retstat(Module, {return, Line, Node1}) ->
-    Command = fun () -> 
+    Body = fun () -> 
         (explist(Module, Node1))() end,
-    eval(Module, Command, ['return'], Line);
+    command(Module, Body, ['return'], Line);
 
 retstat(Module, Node1) ->
     stat(Module, Node1).
@@ -286,18 +257,18 @@ explist(Module, [Node|Tree]) ->
     end.
 
 exp(Module, {_Tag = op, Line, Op, Node1, Node2}) ->
-    Command = fun (Frame) -> 
+    Body = fun (Frame) -> 
         Op1 = (exp(Module, Node1))(),
         Op2 = (exp(Module, Node2))(),
         binop(Op, Op1, Op2, Frame) end,
-    eval(Module, Command, [Op], Line);
+    command(Module, Body, [Op], Line);
 
 exp(Module, {_Tag ='NAME', Line, Name}) ->
-    Command = fun () -> 
+    Body = fun () -> 
         io:format(user, "var: ~p ~p", [Name, _Scope = []]), 
         %% TODO Debug
         _Res = 1 end,
-    eval(Module, Command, ['var', Name], Line);
+    command(Module, Body, ['var', Name], Line);
 
 exp(_Module, {_Tag = 'LITERALSTRING', _Line, Lit}) ->
     %% TODO Format encode and normalization
@@ -324,8 +295,11 @@ exp(_Module, Lit) ->
     end.
 
 %% Debug API
-eval(Module, Command, Meta, Line) ->
+command(Module, Command, Meta, Line) ->
     %% TODO Frame is pre-computed (function args are pre-processed)
-    fun (Frame) ->
-        Module:eval(Command, Line, Meta, Frame)
+    %% TODO Command is executed without Module
+    fun ( ) ->
+        Module:exec(Command, Line, Meta, Frame)
     end.
+
+%% Frame API

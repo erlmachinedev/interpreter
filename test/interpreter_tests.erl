@@ -1,6 +1,6 @@
 -module(interpreter_tests).
 
--import(interpreter, [compile/3]).
+-import(interpreter, [compile/2]).
 
 -export([]).
 
@@ -20,15 +20,14 @@ interpreter_test() ->
     
     meck:new(Module, [non_strict]),
 
-    meck:expect(Module, eval, fun eval/3),
+    meck:expect(Module, eval, fun exec/2),
+    meck:expect(Module, eval, fun eval/4),
 
     Tree = interpreter_parse:process(_Scan = interpreter_scan:process(read_file())),
 
     ?debugVal(Tree, _Depth = 1000),
 
-    Graph = digraph:new(),
-
-    Program = compile(Module, _Code = read_file(), Graph),
+    Program = compile(Module, _Code = read_file()),
 
     Program(_Args = [test]).
 
@@ -46,9 +45,16 @@ read_file() ->
     Res = binary_to_list(Code),
     Res.
 
-eval(Line, Meta, Command) ->
+exec(Command, Ref) ->
     ?debugVal(Command),
+    ?debugVal(Ref),
+
+    _Patch = Command().
+
+eval(Command, Ref, Line, Meta) ->
+    ?debugVal(Command),
+    ?debugVal(Ref),
     ?debugVal(Line),
     ?debugVal(Meta),
 
-    _Res = Command().
+    _Lua = Command().
