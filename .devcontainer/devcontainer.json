@@ -9,7 +9,8 @@
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"erlang-ls.erlang-ls"
+				"erlang-ls.erlang-ls",
+				"openai.chatgpt"
 			]
 		}
 	}
