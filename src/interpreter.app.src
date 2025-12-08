@@ -1,11 +1,10 @@
 {application, interpreter,
  [
-  {description,  "Embedded program to execute Lua code"},
+  {description,  "Lua 5.2 interpreter embedded in ERTS"},
   {vsn,          "0.0.1"},
   {modules,      []},
   {applications, [
-                  kernel, stdlib,
-                  erlbox
+                  kernel, stdlib
                  ]},
 
   {licenses, ["apache-2.0"]},
