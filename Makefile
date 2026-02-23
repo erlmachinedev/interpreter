@@ -2,9 +2,9 @@ PROJECT = interpreter
 PROJECT_DESCRIPTION = "Embedded program to execute Lua code"
 PROJECT_VERSION = 0.0.1
 
-DEPS = erlbox
+DEPS = horus
 
-dep_erlbox = git https://github.com/erlmachinedev/erlbox.git
+dep_horus = hex 0.3.2
 
 TEST_DEPS = meck
 
