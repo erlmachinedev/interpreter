@@ -1,6 +1,6 @@
 -module(interpreter_tests).
 
--import(interpreter, [compile/2, compile/3]).
+-import(interpreter, [compile/2, compute/1]).
 
 -export([]).
 
@@ -21,50 +21,42 @@ interpreter_test() ->
     
     meck:new(Module, [non_strict]),
 
-    meck:expect(Module, eval, fun eval/4),
-    meck:expect(Module, eval, fun eval/2),
-
     meck:expect(Module, exec, fun exec/4),
     meck:expect(Module, exec, fun exec/3),
 
-    ?assertError({error, _}, process(<<"1a = 1 -- error line (scan)">>)),
-    ?assertError({error, _}, process(<<"1 = a1 -- error line (parse)">>)),
+    meck:expect(Module, eval, fun eval/4),
+
+    Code0 = <<"1a = 1 -- error line (scan)">>,
+    Code1 = <<"1 = a1 -- error line (parse)">>,
+    
+    Code2 = <<"a1 / 0 -- error line (runtime)">>,
+
+    ?assertError({error, _}, process(Code0)),
+    ?assertError({error, _}, process(Code1)),
+
+    ?assertError({error, _}, (compile(Module, Code2))(self())),
 
     %% TODO Introduce data type construction helpers (test API)
     %% TODO Introduce host functions (code.lua)
     %% TODO Introduce arguments compaction (list) and substitution (nil)
     %% TODO Test the presence of Arg
 
-    Env = #{ <<"io">> => #{ <<"print">> => fun print/1 } },
+    Code3 = read_file(),
 
-    install(Env, _Arg = [_Mode = <<"test">>, false]),
+    %% TODO Real computed hash assertion
+    ?assertEqual(<<"md5">>, compute(Code3)),
 
-    Code = read_file(),
+    ?debugVal(process(Code3), _Depth = 1000),
 
-    ?debugVal(process(Code), _Depth = 1000),
-
-    Program0 = compile(Module, <<"1/0 -- error line (runtime)">>),
-
-    Program1 = compile(Module, Code, fun (Pid) -> Pid end),
-    Program2 = compile(Module, Code),
-
-    ?assertEqual(Program1, Program2),
-
-    %% TODO Developer can introduce custom exception handling
-    %% 
-    ?assertError({error, _}, Program0),
-
-    ?assertEqual('nil', Program1()).
-
-install(Env, Arg) ->
-    Map0 = maps:new(),
-    Map1 = maps:put(<<"arg">>, Arg, Env),
-
-    Map2 = maps:put(<<"_G">>, Map1, Map0),
+    %% TODO _G or _ENV variable (compatibility)
+    %% TODO arg variable 
     %% TODO Default function and variables (Libraries API)
-    %% TODO Default should be declared on the host side (exec/4, exec/3)
-    %% TODO Elaborate behaviour (Library setup)
-    put(_Global = 0, Map2).
+    %% TODO Default should be controlled on the host side (exec/4, exec/3)
+    %% TODO Developer can introduce custom exception handling
+
+    %% TODO Return value
+    %% TODO Return cells (environment)
+    ?assertEqual('nil', (compile(Module, Code3))(self())).
 
 filename() ->
     Dir = code:priv_dir(_Name = interpreter),
@@ -86,33 +78,43 @@ process(File) ->
     Tree.
 
 %% Debug API
-eval(_Runtime, Command, Line, Meta) ->
-    ?debugVal(Command),
-    
-    ?debugVal(Line),
-    ?debugVal(Meta),
-
-    _Lua = Command().
-
-eval(_Runtime, Command) ->
-    %% TODO Assert Command result
-    ?debugVal(Command),
-
-    Command().
-
-%% Embed API
-exec(_Runtime, Integer, Name, Lua) ->    
-    ?debugVal(Scope),
-    
-    ?debugVal(Name), 
-    ?debugVal(Lua),
-
-    get(Scope).
-
-exec(_Runtime, Integer, Name) ->
-    ?debugVal(Scope),
+eval(Name, Line, Column, Command) ->
     ?debugVal(Name),
 
-    get(Scope).
+    ?debugVal(Line),
+    ?debugVal(Column),
+
+    ?debugVal(Command),
+
+    Command(). %% TODO Assert Command result
+
+%% TODO Embed API (completetly encoded)
+%% TODO Mock based sequence (meck)
+exec(Name, 0 = Cell, ["num"] = Var, 42 = Lua) ->
+    ?debugVal(Name),
+    ?debugVal(Cell),
+    
+    ?debugVal(Var),
+    ?debugVal(Lua).
+
+exec(Name, 0 = Cell, ["num"] = Var) ->
+    ?debugVal(Name),
+    ?debugVal(Cell),
+
+    ?debugVal(Var),
+
+    42;
+
+exec(Name, 0 = Cell, ["_ENV", "io", "print"] = Var) ->
+    ?debugVal(Name),
+    ?debugVal(Cell),
+
+    ?debugVal(Var),
+
+    fun print/1.
+
+%% Host API
+print(Lua) ->
+    ?debugVal(Lua).
 
 %% TODO Iterator (maps) creation and acess
