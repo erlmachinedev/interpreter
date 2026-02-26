@@ -1,10 +1,6 @@
 PROJECT = interpreter
-PROJECT_DESCRIPTION = "Embedded program to execute Lua code"
+PROJECT_DESCRIPTION = "Lua 5.2 interpreter embedded in ERTS"
 PROJECT_VERSION = 0.0.1
-
-DEPS = horus
-
-dep_horus = hex 0.3.2
 
 TEST_DEPS = meck
 
