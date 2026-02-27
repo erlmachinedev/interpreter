@@ -1,6 +1,6 @@
 -module(interpreter).
 
-%% Lua 5.2 interpreter embedded in ERTS (lowered to an Erlang function)
+%% Lua 5.2 interpreter embedded in ERTS
  
 %% Embed API
 -callback exec(name(), cell(), [key()], lua()) -> erl().
@@ -153,13 +153,18 @@
 %% Public API — four functions, two pairs:
 %%   Setup:     iterator/1  create iterator over §6.1 bindings
 %%              next/1       pull next {Keys, Value, Iterator} | none
-%%   Transform: compile/2   Lua source → program (closure tree)
+%%   Transform: compile/3   Lua source → assembly (default) or binary
 %%              compute/1   Lua source → content hash (MD5 hex)
+%%
+%% compile/3 output level follows Erlang compiler convention (option flags):
+%%   compile(Module, Code, [])       → BEAM assembly forms (default)
+%%   compile(Module, Code, [binary]) → compiled .beam binary
+%% compile/2 = compile/3 with [] opts (assembly).
 %%
 %% Host implements exec/3 (read) and exec/4 (write) as behaviour callbacks.
 %% Setup (iterator/next) and runtime (exec) use separate mechanisms:
 %% the interpreter stays stateless; the host owns storage and _ENV.
--export([iterator/1, next/1, compile/2, compute/1]).
+-export([iterator/1, next/1, compile/3, compute/1]).
 
 -type code() :: string().
 
@@ -201,16 +206,15 @@ next(_Iterator) ->
 compute(Code) ->
     binary:encode_hex(_Md5 = erlang:md5(Code)).
 
--spec compile(module(), code()) -> program().
-compile(Module, Code) ->
+%% Compile Lua source to BEAM assembly (default) or binary; cf. compile:file/2 opts.
+
+-spec compile(module(), code(), [atom()]) -> erl().
+compile(Module, Code, Opts) ->
     Tree = interpreter_parse:process(_Scan = interpreter_scan:process(Code)),
     Exec = chunk(Module, Tree),
 
-    fun (Name) ->
-        %% TODO Side effects are produced independetly
-
-        Exec(Name)
-    end.
+    %% TODO Implement compilation to BEAM assembly or binary [to_asm, to_binary]
+    compile:file(Module, Exec, Opts).
 
 assert(If, Frame) ->
     Bool = If(Frame),
@@ -338,68 +342,73 @@ stats(Module, [Node|Tree]) ->
         Code(Frame1) 
     end.
 
-stat(Module, {_Tag = 'assign', Line, Node1, Node2}) ->
+stat(Module, {_Tag = 'assign', Line, Column, Node1, Node2}) ->
     Body = fun (Frame) ->
         Vars = (explist(Module, Node1))(),
         Vals = (explist(Module, Node2))(),
 
         assign(Vars, Vals) end,
 
-    command(Module, Body, ['='], Line);
+    command(Module, Body, ['='], Line, Column);
 
-stat(Module, {_Tag = 'elseif', Line, Node1, Node2}) ->
+stat(Module, {_Tag = 'elseif', Line, Column, Node1, Node2}) ->
     Body = fun (Frame) ->
         If = exp(Module, Node1),
         assert(If, _IfBody = block(Module, Node2)) end,
 
-    command(Module, Body, ['elseif'], Line);
+    command(Module, Body, ['elseif'], Line, Column);
 
-stat(Module, {_Tag = 'elseif', Line, Node1, Node2, Node3}) ->
+stat(Module, {_Tag = 'elseif', Line, Column, Node1, Node2, Node3}) ->
     Body = fun (Frame) ->
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         assert(If, IfBody, _Else = stat(Module, Node3)) end,
 
-    command(Module, Body, ['elseif'], Line);
+    command(Module, Body, ['elseif'], Line, Column);
 
-stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3}) ->
+stat(Module, {_Tag = 'if', Line, Column, Node1, Node2, Node3}) ->
     Body = fun (Frame) -> 
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         assert(If, IfBody, _ElseBody = block(Module, Node3)) end,
 
-    command(Module, Body, ['if'], Line);
+    command(Module, Body, ['if'], Line, Column);
 
-stat(Module, {_Tag = 'if', Line, Node1, Node2, Node3, Node4}) ->
+stat(Module, {_Tag = 'if', Line, Column, Node1, Node2, Node3, Node4}) ->
     Body = fun (Frame) -> 
         If = exp(Module, Node1),
         IfBody = block(Module, Node2),
         Else = stat(Module, Node3),
         assert(If, IfBody, Else, _ElseBody = stat(Module, Node4)) end,
 
-    eval(Module, _Command = command(Body), ['if'], Line);
+    eval(Module, _Command = command(Body), Line, Column);
 
-stat(Module, {_Tag = 'else', Line, Node1}) ->
+stat(Module, {_Tag = 'else', Line, Column, Node1}) ->
     Body = fun (Frame) -> 
         (block(Module, Node1))() end,
 
-    command(Module, Body, ['else'], Line);
+    command(Module, Body, ['else'], Line, Column);
 
-stat(Module, {_Tag = 'while', Line, Node1, Node2}) ->
+stat(Module, {_Tag = 'while', Line, Column, Node1, Node2}) ->
     Body = fun (Frame) -> 
         Condition = exp(Module, Node1),
         repeat(Condition, _Body = block(Module, Node2), Frame) end,
 
-    command(Module, Body, ['while', 'do', 'end'], Line).
+    command(Module, Body, ['while', 'do', 'end'], Line, Column).
 
-retstat(Module, {return, Line, Node}) ->
+retstat(Module, {return, Line, Column, Node}) ->
     Body = fun (Frame) -> 
         (explist(Module, Node))() end,
 
-    command(Module, Body, ['return'], Line);
+    command(Module, Body, ['return'], Line, Column);
 
 retstat(Module, Node) ->
     stat(Module, Node).
+
+command(Body) ->
+    Body.
+command(Module, Body, _Meta, Line, Column) ->
+    eval(Module, Body, Line, Column).
 
 explist(Module, [Node]) ->
     Exec = exp(Module, Node),
@@ -418,36 +427,36 @@ explist(Module, [Node|Tree]) ->
         Code(Frame1)
     end.
 
-exp(Module, {_Tag = op, Line, Op, Node1, Node2}) ->
+exp(Module, {_Tag = op, Line, Column, Op, Node1, Node2}) ->
     Op1 = (exp(Module, Node1))(),
     Op2 = (exp(Module, Node2))(),
 
     Body = fun (Frame) -> 
         binop(Op, Op1, Op2, Frame) end,
 
-    command(Module, Body, [Op], Line);
+    command(Module, Body, [Op], Line, Column);
 
-exp(Module, {_Tag ='NAME', Line, Name}) ->
+exp(Module, {_Tag ='NAME', Line, Column, Name}) ->
     Body = fun () -> 
         io:format(user, "var: ~p ~p", [Name, _Scope = []]), 
         %% TODO Debug
         _Res = 1 end,
 
-    command(Module, Body, ['var', Name], Line);
+    command(Module, Body, ['var', Name], Line, Column);
 
-exp(_Module, {_Tag = 'LITERALSTRING', _Line, Lit}) ->
+exp(_Module, {_Tag = 'LITERALSTRING', _Line, _Column, Lit}) ->
     %% TODO Format encode and normalization
     fun () -> 
         Lit 
     end;
 
-exp(_Module, {_Tag = 'NUMERAL', _Line, Lit}) ->
+exp(_Module, {_Tag = 'NUMERAL', _Line, _Column, Lit}) ->
     %% TODO Format encode and normalization
     fun () -> 
         Lit 
     end;
 
-exp(_Module, {_Tag = nil, _Line}) ->
+exp(_Module, {_Tag = nil, _Line, _Column}) ->
     fun () -> 
         'nil' 
     end;
@@ -460,11 +469,11 @@ exp(_Module, Lit) ->
     end.
 
 %% Debug API
-eval(Module, Command, Meta, Line) ->
+eval(Module, Command, Line, Column) ->
     %% TODO Frame is pre-computed (function args are pre-processed)
     %% TODO Frame is contained as enclosure
     fun (Runtime) ->
-        Module:eval(Runtime, Command, Line, Meta)
+        Module:eval(Runtime, Command, Line, Column)
     end.
 
 eval(Module, Command) ->
@@ -598,45 +607,208 @@ exec(Module, Command) ->
 %%   Naming: iterator/1 is a constructor, next/1 is the step function.
 %%   Implementations are pre-built Erlang funs; no Lua source compiled.
 %%
-%% Portable compiled programs via Horus
-%% -------------------------------------
+%% Portable compiled programs (in-tree assembly draft)
+%% --------------------------------------------------
 %%   compile/2 returns an Erlang fun (closure tree). This fun references
 %%   internal interpreter functions (chunk, block, stat, exp, etc.) by module.
 %%   Sending it to another BEAM node requires the same interpreter module
 %%   version — otherwise results differ or the call crashes.
 %%
-%%   Horus (https://github.com/rabbitmq/horus) solves this:
-%%     1. horus:to_standalone_fun/1 disassembles the fun's BEAM bytecode
-%%     2. Recursively extracts all called functions (interpreter internals)
-%%     3. Creates a standalone module with everything inlined
-%%     4. Returns a #horus_fun{} — portable binary, no module dependency
-%%     5. horus:exec/2 loads and runs it on any node
+%%   Portable/storable compiled output is implemented in-tree (see the
+%%   "Assembly draft" section in this module), not via an external dependency:
+%%     1. asm_from_beam/1 — load BEAM file/binary to assembly (beam_disasm)
+%%     2. merge_fun_forms_with_renumbering/1 — merge function lists, renumber
+%%        labels so each function's labels are unique; returns {Merged, LabelMap}
+%%     3. rewrite_label_refs/2 — generic term walker: replace all {f,N} with
+%%        {f, NewN} using LabelMap (future-proof for any instruction shape)
+%%     4. assembly_to_binary/1 — compile assembly to BEAM binary (temp .S +
+%%        compile:file(..., [from_asm, binary]))
 %%
-%%   Usage with this interpreter:
-%%     Program    = interpreter:compile(Host, LuaSource),
-%%     Standalone = horus:to_standalone_fun(Program),
-%%     %% Send to another node or store as binary:
-%%     erpc:call(NodeB, horus, exec, [Standalone, [Name]]).
-%%
-%%   What the execution node needs:
-%%     - Host module (for exec/3, exec/4 callbacks)
-%%     - Horus runtime
-%%   What it does NOT need:
-%%     - interpreter, interpreter_scan, interpreter_parse
-%%
-%%   Caveats:
-%%     - Host module must be present on the execution node (external call).
-%%       Horus's should_process_function callback can extract it too if needed.
-%%     - Both nodes should run the same (or compatible) OTP version — Horus
-%%       works at BEAM assembly level; newer instructions break on older VMs.
-%%     - Horus is Alpha (used by RabbitMQ/Khepri internally).
-%%     - Extraction cost: do once per compiled program, cache the result.
-%%       compute/1 hash can serve as cache key for standalone funs.
+%%   Pipeline for standalone/portable: get assembly from generated module and
+%%   from interpreter helpers → merge_fun_forms_with_renumbering →
+%%   (Merged already rewritten) → build {beam_file, Mod, Exports, Attrs, Merged}
+%%   → assembly_to_binary → store or send the binary; load on another node
+%%   with code:load_binary/3.
 %%
 %%   Aligns with the stateless design: stateless interpreter + portable
-%%   compiled output (via Horus) + host-owned storage = fully distributed
+%%   compiled output (in-tree) + host-owned storage = fully distributed
 %%   Lua execution. Compile on node A, run on node B, state on node C.
+%%
+%% Compilation strategy: lowering to generated modules
+%% ---------------------------------------------------
+%%   compile/2 currently produces a closure tree (nested funs). The target
+%%   design lowers Lua AST to a generated BEAM module where expressions are
+%%   function invocations (A-normal form / call skeleton).
+%%
+%%   Function extraction uses beam_disasm (assembly level, post-compilation
+%%   bytecode) rather than beam_lib + abstract_code (debug_info). Rationale:
+%%     - No +debug_info dependency — works on release/stripped builds.
+%%     - Faithful to the VM: what is extracted is what actually executes.
+%%     - Works on third-party modules without source availability.
+%%
+%%   Pipeline:
+%%     Lua source → lexer → parser → Lua AST
+%%       → generate BEAM module with remote calls to interpreter helpers
+%%       → compile:forms/2 → .beam binary → code:load_binary/3
+%%       → (optional) in-tree assembly draft for portability: asm_from_beam,
+%%         merge_fun_forms_with_renumbering, rewrite_label_refs,
+%%         assembly_to_binary → standalone beam.
+%%
+%%   Optimization phases (incremental):
+%%     Phase 1: Remote calls to interpreter module — simple, correct.
+%%     Phase 2: In-tree merge/renumber — local calls, JIT can inline.
+%%     Phase 3: Specialize known-type operations to native Erlang ops.
+%%
+%%   Compilation levels (via compile/3 option flags, cf. compile:file/2):
+%%     assembly  → BEAM assembly forms (default — inspectable, composable)
+%%     binary    → compiled .beam binary (storable, loadable, transferable)
+%%   The closure tree (compile/2) is deprecated. Assembly is the primary
+%%   output; binary is assembly + compile:forms/2 in one step. Further
+%%   levels (module loading, portable standalone) are host-side concerns
+%%   built on top of binary output using the in-tree assembly helpers.
+%%
+%% Metadata in compiled modules (compile_info)
+%% ------------------------------------------
+%%   We will leverage the compiler's {compile_info, [{Key, Value}]} option
+%%   to store metadata in the BEAM CInf chunk (readable via
+%%   module_info(compile) or beam_lib:chunks(Beam, [compile_info])).
+%%
+%%   An option to attach custom metadata will be exposed to the client when
+%%   compiling Lua to BEAM; client-supplied key-value pairs can be passed
+%%   through into compile_info. By default we attach system-level meta:
+%%   interpreter version and other minimal system info, so every compiled
+%%   module carries at least that. Optional keys (e.g. lua_source, backend,
+%%   compile_opts) can be added when the client enables them.
 %%
 %% =============================================================================
 %% END NOTES
+%% =============================================================================
+
+%% =============================================================================
+%% Assembly draft — in-tree helpers for merge, label renumbering, and binary
+%% =============================================================================
+%%
+%% Replaces Horus for the narrow use case: merge generated + interpreter
+%% assembly, renumber labels, rewrite {f,N} refs, compile to beam binary.
+%% Pipeline: asm_from_beam/1 → merge_fun_forms_with_renumbering/1 →
+%%           rewrite_label_refs/2 over all instructions → assembly_to_binary/1.
+%%
+%% Uses OTP only: beam_disasm (compiler), compile:file/2 with from_asm.
+%% =============================================================================
+
+%% Load BEAM file into assembly. beam_disasm returns {beam_file, Mod, Exports,
+%% Attrs, Functions}. For a binary we write to a temp file and disassemble.
+%% Returns {beam_file, Mod, Exports, Attrs, Functions} or {error, Reason}.
+-spec asm_from_beam(file:filename_all() | binary()) ->
+          {beam_file, module(), term(), term(), [term()]} | {error, term()}.
+asm_from_beam(Path) when is_list(Path); is_binary(Path) ->
+    case Path of
+        Bin when is_binary(Bin) ->
+            Tmp = filename:join(asm_temporary_directory(), "interpreter_asm_" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".beam"),
+            try
+                ok = file:write_file(Tmp, Bin),
+                beam_disasm:file(Tmp)
+            after
+                _ = file:delete(Tmp)
+            end;
+        _ ->
+            beam_disasm:file(Path)
+    end.
+
+%% Merge multiple function form lists (e.g. the 5th element of beam_disasm
+%% result) into one, renumbering labels so each function's labels are unique.
+%% Returns {MergedForms, LabelMap}. Apply rewrite_label_refs(Merged, LabelMap)
+%% to get final forms with all {f,N} updated.
+-spec merge_fun_forms_with_renumbering([[term()]]) -> {[term()], map()}.
+merge_fun_forms_with_renumbering(AsmFormLists) ->
+    {AllFuns, _NextLabel, AccMap} = lists:foldl(
+        fun(Forms, {Funs, Label, Map}) ->
+            {FunsHere, NewLabel, NewMap} = asm_collect_functions_and_renumber(Forms, Label, Map),
+            {Funs ++ FunsHere, NewLabel, NewMap}
+        end,
+        {[], 1, #{}},
+        AsmFormLists
+    ),
+    Merged0 = lists:reverse(AllFuns),
+    Merged = rewrite_label_refs(Merged0, AccMap),
+    {Merged, AccMap}.
+
+%% Recursively rewrite all {f, N} terms in Term using LabelMap; leave other
+%% terms unchanged. Future-proof: one walker for any instruction shape.
+-spec rewrite_label_refs(term(), map()) -> term().
+rewrite_label_refs({f, N}, Map) ->
+    case maps:get(N, Map, N) of
+        New when is_integer(New) -> {f, New};
+        _ -> {f, N}
+    end;
+rewrite_label_refs(Term, Map) when is_tuple(Term) ->
+    list_to_tuple([rewrite_label_refs(X, Map) || X <- tuple_to_list(Term)]);
+rewrite_label_refs(Term, Map) when is_list(Term) ->
+    [rewrite_label_refs(X, Map) || X <- Term];
+rewrite_label_refs(Term, _Map) ->
+    Term.
+
+%% Compile assembly to a BEAM binary. Expects the same structure beam_disasm
+%% returns: {beam_file, Mod, Exports, Attrs, Functions}. Uses a temporary .S
+%% file because compile accepts from_asm only for file input.
+%% Returns {ok, ModuleName, Binary} or {error, Errors}.
+-spec assembly_to_binary(term()) -> {ok, module(), binary()} | {error, term()}.
+assembly_to_binary(Asm) ->
+    %% Documentation: compile:forms/2 is specified to take "a list of forms
+    %% (in either Erlang abstract or Core Erlang format)" — i.e. AST, not
+    %% assembly. Type forms() = abstract_code() | cerl:c_module(). The option
+    %% from_asm is documented only for compile:file/2 ("The input *file* is
+    %% expected to be assembler code"). So compile:forms(Forms, [from_asm,...])
+    %% is undocumented: the implementation accepts the compiler's internal
+    %% assembly 5-tuple {Mod, Exports, Attrs, Functions, NextLabel} (#function{}
+    %% records). Horus uses that and thus avoids disk. We use compile:file
+    %% here because our Asm is beam_disasm-style; to avoid temp files, build
+    %% that 5-tuple and call compile:forms(Asm, [from_asm, binary, return_errors]).
+    Tmp = filename:join(asm_temporary_directory(), "interpreter_asm_" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".S"),
+    try
+        ok = file:write_file(Tmp, io_lib:format("~p.~n", [Asm])),
+        case compile:file(Tmp, [from_asm, binary, return_errors]) of
+            {ok, _Mod, _Bin} = Ok -> Ok;
+            {error, Es, _Ws} -> {error, Es};
+            Other -> {error, Other}
+        end
+    after
+        _ = file:delete(Tmp)
+    end.
+
+%% --- Helpers (assembly draft) ---
+
+asm_temporary_directory() ->
+    case file:get_cwd() of
+        {ok, Cwd} -> Cwd;
+        _ -> "/tmp"
+    end.
+
+asm_collect_functions_and_renumber(Forms, StartLabel, Map) ->
+    lists:foldl(
+        fun
+            (F = {function, _L, _Name, _Arity, Code}, {Acc, Label, M}) ->
+                {NewCode, NewLabel, NewM} = asm_renumber_labels_in_code(Code, Label, M),
+                {[setelement(5, F, NewCode) | Acc], NewLabel, NewM};
+            (_, Acc) ->
+                Acc
+        end,
+        {[], StartLabel, Map},
+        Forms
+    ).
+
+asm_renumber_labels_in_code(Code, StartLabel, Map) when is_list(Code) ->
+    lists:mapfoldl(
+        fun
+            ({label, N}, {L, M}) -> {{label, L}, {L + 1, M#{N => L}}};
+            (Other, State) -> {Other, State}
+        end,
+        {StartLabel, Map},
+        Code
+    );
+asm_renumber_labels_in_code(Code, L, M) when not is_list(Code) ->
+    {Code, L, M}.
+
+%% =============================================================================
+%% END Assembly draft
 %% =============================================================================

@@ -25,41 +25,40 @@ L = [a-z]
 
 Rules.
 
-%% Names/identifiers.
+%% Names/identifiers. Pass Line, Column as separate params (TokenLine, TokenCol from leex).
 ({U}|{L}|_)({U}|{L}|_|{D})* :
-	name_token(TokenChars, TokenLine).
-%% Numbers, we separately parse (Erlang) integers and floats.
-%% Integers.
+	name_token(TokenChars, TokenLine, TokenCol).
+%% Numbers.
 {D}+ : 
 	case catch {ok,list_to_integer(TokenChars)} of
-	    {ok,I} -> {token,{'NUMERAL',TokenLine,I}};
+	    {ok,I} -> {token,{'NUMERAL',TokenLine,TokenCol,I}};
 	    _ -> {error,"illegal number"}
 	end.
 0[xX]{H}+ :
         Int = list_to_integer(string:substr(TokenChars, 3), 16),
-        {token,{'NUMERAL',TokenLine,Int}}.
+        {token,{'NUMERAL',TokenLine,TokenCol,Int}}.
 
 %% Floats, we have separate rules to make them easier to handle.
 {D}+\.{D}+([eE][-+]?{D}+)? :
 	case catch {ok,list_to_float(TokenChars)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,F}};
+	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
 	    _ -> {error,"illegal number"}
 	end.
 {D}+[eE][-+]?{D}+ :
 	[M,E] = string:tokens(TokenChars, "eE"),
 	case catch {ok,list_to_float(M ++ ".0e" ++ E)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,F}};
+	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
 	    _ -> {error,"illegal number"}
 	end.
 {D}+\.([eE][-+]?{D}+)? :
 	[M|E] = string:tokens(TokenChars, "."),
 	case catch {ok,list_to_float(lists:append([M,".0"|E]))} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,F}};
+	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
 	    _ -> {error,"illegal number"}
 	end.
 \.{D}+([eE][-+]?{D}+)? :
 	case catch {ok,list_to_float("0" ++ TokenChars)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,F}};
+	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
 	    _ -> {error,"illegal number"}
 	end.
 
@@ -67,61 +66,59 @@ Rules.
 %% more like the Lua parser.
 
 0[xX]{H}*\.?{H}*([pP][+-]?{D}+)? :
-	hex_float_token(TokenChars, TokenLine).
+	hex_float_token(TokenChars, TokenLine, TokenCol).
 
 %% Strings. 
 %% Handle the illegal newlines in string_token.
 \"(\\.|\\\n|[^"\\])*\" :
-	string_token(TokenChars, TokenLen, TokenLine).
+	string_token(TokenChars, TokenLen, TokenLine, TokenCol).
 \'(\\.|\\\n|[^'\\])*\' :
-	string_token(TokenChars, TokenLen, TokenLine).
-%% Handle multi line strings, [[ ]], [=[ ]=], [==[ ]==]
-%% This gets a bit tedious as we have to each case separately.
+	string_token(TokenChars, TokenLen, TokenLine, TokenCol).
 \[\[([^]]|\][^]])*\]\] :
-	long_string_token(TokenChars, TokenLen, 2, TokenLine).
+	long_string_token(TokenChars, TokenLen, 2, TokenLine, TokenCol).
 \[=\[([^]]|\](=[^]]|[^=]))*\]=\] :
-	long_string_token(TokenChars, TokenLen, 3, TokenLine).
+	long_string_token(TokenChars, TokenLen, 3, TokenLine, TokenCol).
 \[==\[([^]]|\](==[^]]|=[^=]|[^=]))*\]==\] :
-	long_string_token(TokenChars, TokenLen, 4, TokenLine).
+	long_string_token(TokenChars, TokenLen, 4, TokenLine, TokenCol).
 \[===\[([^]]|\](===[^]]|==[^=]|=[^=]|[^=]))*\]===\] :
-	long_string_token(TokenChars, TokenLen, 5, TokenLine).
+	long_string_token(TokenChars, TokenLen, 5, TokenLine, TokenCol).
 
 %% \[==\[([^]]|\]==[^]]|\]=[^=]|\][^=])*\]==\] :
 
 %% Other known tokens.
-\+  : {token,{'+',TokenLine}}.
-\-  : {token,{'-',TokenLine}}.
-\*  : {token,{'*',TokenLine}}.
-\/  : {token,{'/',TokenLine}}.
-\// : {token,{'//',TokenLine}}.
-\%  : {token,{'%',TokenLine}}.
-\^  : {token,{'^',TokenLine}}.
-\&  : {token,{'&',TokenLine}}.
-\|  : {token,{'|',TokenLine}}.
-\~  : {token,{'~',TokenLine}}.
-\>> : {token,{'>>',TokenLine}}.
-\<< : {token,{'<<',TokenLine}}.
-\#  : {token,{'#',TokenLine}}.
-==  : {token,{'==',TokenLine}}.
-~=  : {token,{'~=',TokenLine}}.
-<=  : {token,{'<=',TokenLine}}.
->=  : {token,{'>=',TokenLine}}.
-<  :  {token,{'<',TokenLine}}.
->  :  {token,{'>',TokenLine}}.
-=  :  {token,{'=',TokenLine}}.
-\( : {token,{'(',TokenLine}}.
-\) : {token,{')',TokenLine}}.
-\{ : {token,{'{',TokenLine}}.
-\} : {token,{'}',TokenLine}}.
-\[ : {token,{'[',TokenLine}}.
-\] : {token,{']',TokenLine}}.
-:: : {token,{'::',TokenLine}}.
-;  : {token,{';',TokenLine}}.
-:  : {token,{':',TokenLine}}.
-,  : {token,{',',TokenLine}}.
-\. : {token,{'.',TokenLine}}.
-\.\. : {token,{'..',TokenLine}}.
-\.\.\. : {token,{'...',TokenLine}}.
+\+  : {token,{'+',TokenLine,TokenCol}}.
+\-  : {token,{'-',TokenLine,TokenCol}}.
+\*  : {token,{'*',TokenLine,TokenCol}}.
+\/  : {token,{'/',TokenLine,TokenCol}}.
+\// : {token,{'//',TokenLine,TokenCol}}.
+\%  : {token,{'%',TokenLine,TokenCol}}.
+\^  : {token,{'^',TokenLine,TokenCol}}.
+\&  : {token,{'&',TokenLine,TokenCol}}.
+\|  : {token,{'|',TokenLine,TokenCol}}.
+\~  : {token,{'~',TokenLine,TokenCol}}.
+\>> : {token,{'>>',TokenLine,TokenCol}}.
+\<< : {token,{'<<',TokenLine,TokenCol}}.
+\#  : {token,{'#',TokenLine,TokenCol}}.
+==  : {token,{'==',TokenLine,TokenCol}}.
+~=  : {token,{'~=',TokenLine,TokenCol}}.
+<=  : {token,{'<=',TokenLine,TokenCol}}.
+>=  : {token,{'>=',TokenLine,TokenCol}}.
+<  :  {token,{'<',TokenLine,TokenCol}}.
+>  :  {token,{'>',TokenLine,TokenCol}}.
+=  :  {token,{'=',TokenLine,TokenCol}}.
+\( : {token,{'(',TokenLine,TokenCol}}.
+\) : {token,{')',TokenLine,TokenCol}}.
+\{ : {token,{'{',TokenLine,TokenCol}}.
+\} : {token,{'}',TokenLine,TokenCol}}.
+\[ : {token,{'[',TokenLine,TokenCol}}.
+\] : {token,{']',TokenLine,TokenCol}}.
+:: : {token,{'::',TokenLine,TokenCol}}.
+;  : {token,{';',TokenLine,TokenCol}}.
+:  : {token,{':',TokenLine,TokenCol}}.
+,  : {token,{',',TokenLine,TokenCol}}.
+\. : {token,{'.',TokenLine,TokenCol}}.
+\.\. : {token,{'..',TokenLine,TokenCol}}.
+\.\.\. : {token,{'...',TokenLine,TokenCol}}.
 
 [\011-\015\s\240]+ : skip_token.		%Mirror Lua here
 
@@ -137,6 +134,9 @@ Rules.
 --\[\[([^]]|\][^]])* : {error,"unfinished long comment"}.
 
 Erlang code.
+%% Leex predefined variables in rules: TokenChars, TokenLen, TokenLine, TokenCol.
+%% We pass Line and Column as separate parameters (TokenLine, TokenCol) to helpers.
+%% https://www.erlang.org/doc/apps/parsetools/leex.html
 
 -export([process/1, is_keyword/1, string_chars/1, chars/1]).
 
@@ -144,22 +144,25 @@ Erlang code.
 
 process_test() -> ok.
 
+%% string/1 (leex-generated) returns {ok, Tokens, EndLine} | {error, ...}.
+-spec process(string()) -> [term()].
 process(Code) ->
     case string(Code) of
-        {ok,Tokens,_EndLine} -> Tokens;
-        {error, {_Line, _Mod, Desc}, _} -> error(_Format = format_error(Desc))
+        {ok, Tokens, _EndLine} ->
+            Tokens;
+        {error, {_Loc, _Mod, Desc}, _} ->
+            error(_Format = format_error(Desc))
     end.
 
-%% name_token(Chars, Line) ->
-%%     {token,{'NAME',Line,Symbol}} | {Name,Line} | {error,E}.
-%%  Build a name from list of legal characters, else error.
+%% name_token(Chars, Line, Column) -> {token,{...}} | {error,E}.
+%%  Line, Column as separate parameters. Build a name from list of legal characters.
 
-name_token(Cs, L) ->
+name_token(Cs, Line, Column) ->
     case catch {ok,list_to_binary(Cs)} of
 	{ok,Name} ->
 	    case is_keyword(Name) of
-		true -> {token,{name_string(Name),L}};
-		false -> {token,{'NAME',L,Name}}
+		true -> {token,{name_string(Name),Line,Column}};
+		false -> {token,{'NAME',Line,Column,Name}}
 	    end;
 	_ -> {error,"illegal name"}
     end.
@@ -167,17 +170,15 @@ name_token(Cs, L) ->
 name_string(Name) ->
     binary_to_atom(Name, latin1).		%Only latin1 in Lua
 
-%% hex_float_token(TokenChars, TokenLine) ->
-%%     {token,{'NUMERAL',TokenLine,Float}} | {error,E}.
-%%  Build a float form a hex float string.
+%% hex_float_token(TokenChars, Line, Column) -> {token,{'NUMERAL',Line,Column,Float}} | {error,E}.
 
-hex_float_token(TokenChars, TokenLine) ->
+hex_float_token(TokenChars, Line, Column) ->
     Tcs = string:substr(TokenChars, 3),
     case lists:splitwith(fun (C) -> (C =/= $p) and (C =/= $P) end, Tcs) of
 	{Mcs,[]} when Mcs /= [] ->
-	    hex_float(Mcs, [], TokenLine);
+	    hex_float(Mcs, [], Line, Column);
 	{Mcs,[_P|Ecs]} when Ecs /= [] ->
-	    hex_float(Mcs, Ecs, TokenLine);
+	    hex_float(Mcs, Ecs, Line, Column);
 	_Other -> {error,"malformed number"}
     end.
 
@@ -185,17 +186,17 @@ hex_float_token(TokenChars, TokenLine) ->
 %% hex_mantissa(Chars) -> {float,Float} | error.
 %% hex_fraction(Chars, Pow, SoFar) -> Fraction.
 
-hex_float(Mcs, [], Line) ->
+hex_float(Mcs, [], Line, Column) ->
     case hex_mantissa(Mcs) of
-	{float,M} -> {token,{'NUMERAL',Line,M}};
+	{float,M} -> {token,{'NUMERAL',Line,Column,M}};
 	error -> {error,"malformed number"}
     end;
-hex_float(Mcs, Ecs, Line) ->
+hex_float(Mcs, Ecs, Line, Column) ->
     case hex_mantissa(Mcs) of
 	{float,M} ->
 	    case catch list_to_integer(Ecs, 10) of
 		{'EXIT',_} -> {error,"malformed number"};
-		E -> {token,{'NUMERAL',Line,M * math:pow(2, E)}}
+		E -> {token,{'NUMERAL',Line,Column,M * math:pow(2, E)}}
 	    end;
 	error -> {error,"malformed number"}
     end.
@@ -219,18 +220,14 @@ hex_fraction([C|Cs], Pow, SoFar) when C >= $A, C =< $F ->
     hex_fraction(Cs, Pow*16, SoFar + (C - $A + 10)/Pow);
 hex_fraction([], _Pow, SoFar) -> SoFar.
 
-%% string_token(InputChars, Length, Line) ->
-%%     {token,{'LITERALSTRING',Line,Cs}} | {error,Error}.
-%%  Convert an input string into the corresponding string characters.
-%%  We know that the input string is correct.
+%% string_token(InputChars, Length, Line, Column) -> {token,{'LITERALSTRING',Line,Column,String}} | {error,E}.
 
-string_token(Cs0, Len, L) ->
-    Cs1 = string:substr(Cs0, 2, Len - 2),       %Strip quotes
+string_token(Cs0, Len, Line, Column) ->
+    Cs1 = string:substr(Cs0, 2, Len - 2),
     try
         Bytes = string_chars(Cs1),
         String = unicode:characters_to_binary(Bytes, utf8, utf8),
-        %% String = iolist_to_binary(Bytes),
-        {token,{'LITERALSTRING',L,String}}
+        {token,{'LITERALSTRING',Line,Column,String}}
     catch
         _:_ ->
             {error,"illegal string"}
@@ -257,19 +254,17 @@ string_chars([], []) -> [];
 string_chars([], Acc) ->
     [lists:reverse(Acc)].
 
-%% long_string_token(InputChars, Length, BracketLength, Line) ->
-%%     {token,{'LITERALSTRING',Line,Cs}} | {error,Error}.
+%% long_string_token(InputChars, Length, BracketLength, Line, Column) ->
+%%     {token,{'LITERALSTRING',Line,Column,String}} | {error,E}.
 
-long_string_token(Cs0, Len, BrLen, Line) ->
-    %% Strip the brackets and remove first char if a newline.
-    %% Note we export Cs1 here, :-)
-    Cs2=case string:substr(Cs0, BrLen+1, Len - 2*BrLen) of
-	   [$\n | Cs1] -> Cs1;
-	   Cs1 -> Cs1
-    end,
+long_string_token(Cs0, Len, BrLen, Line, Column) ->
+    Cs2 = case string:substr(Cs0, BrLen+1, Len - 2*BrLen) of
+	      [$\n | Cs1] -> Cs1;
+	      Cs1 -> Cs1
+	  end,
     try
 	String = unicode:characters_to_binary(Cs2, utf8, utf8),
-	{token,{'LITERALSTRING',Line,String}}
+	{token,{'LITERALSTRING',Line,Column,String}}
     catch
 	_:_ ->
 	    {error,"illegal string"}

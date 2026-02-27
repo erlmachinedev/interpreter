@@ -70,8 +70,8 @@ chunk -> block : '$1'  .
 block -> stats : '$1' .
 block -> stats retstat : '$1' ++ ['$2'] .
 
-retstat -> return semi : {return,line('$1'),[]} .
-retstat -> return explist semi : {return,line('$1'),'$2'} .
+retstat -> return semi : {return,line('$1'),column('$1'),[]} .
+retstat -> return explist semi : {return,line('$1'),column('$1'),'$2'} .
 
 semi -> ';' .					%semi is never returned
 semi -> '$empty' .
@@ -80,38 +80,38 @@ stats -> '$empty' : [] .
 stats -> stats stat : '$1' ++ ['$2'] .
 
 stat -> ';' : '$1' .
-stat -> varlist '=' explist : {assign,line('$2'),'$1','$3'} .
+stat -> varlist '=' explist : {assign,line('$2'),column('$2'),'$1','$3'} .
 %% Following functioncall rule removed to stop reduce-reduce conflict.
 %% Replaced with a prefixexp which should give the same. We hope!
 %%stat -> functioncall : '$1' .
 stat -> prefixexp : check_functioncall('$1') .
 stat -> label_stat : '$1' .
-stat -> 'break' : {break,line('$1')} .
-stat -> 'goto' NAME : {goto,line('$1'),'$2'} .
-stat -> 'do' block 'end' : {block,line('$1'),'$2'} .
+stat -> 'break' : {break,line('$1'),column('$1')} .
+stat -> 'goto' NAME : {goto,line('$1'),column('$1'),'$2'} .
+stat -> 'do' block 'end' : {block,line('$1'),column('$1'),'$2'} .
 stat -> while_stat : '$1' .
 stat -> repeat_stat : '$1' .
 stat -> if_stat : '$1' .
 stat -> for_stat : '$1' .
-stat -> function funcname funcbody : functiondef(line('$1'),'$2','$3') .
-stat -> local local_decl : {local,line('$1'),'$2'} .
+stat -> function funcname funcbody : functiondef(line('$1'),column('$1'),'$2','$3') .
+stat -> local local_decl : {local,line('$1'),column('$1'),'$2'} .
 
-label_stat -> '::' NAME '::' : {label,line('$1'),'$2'} .
+label_stat -> '::' NAME '::' : {label,line('$1'),column('$1'),'$2'} .
 
-while_stat -> 'while' exp 'do' block 'end' : {while,line('$1'),'$2','$4'} .
+while_stat -> 'while' exp 'do' block 'end' : {while,line('$1'),column('$1'),'$2','$4'} .
 
-repeat_stat -> 'repeat' block 'until' exp : {repeat,line('$1'),'$2','$4'} .
+repeat_stat -> 'repeat' block 'until' exp : {repeat,line('$1'),column('$1'),'$2','$4'} .
 
 if_stat -> 'if' exp 'then' block if_elseif if_else 'end' :
-    condition('if', line('$1'), '$2', '$4', '$5', '$6') .
+    condition('if', line('$1'), column('$1'), '$2', '$4', '$5', '$6') .
 
 if_elseif -> 'elseif' exp 'then' block if_elseif: 
-    condition('elseif', line('$1'), '$2', '$4', '$5') .
+    condition('elseif', line('$1'), column('$1'), '$2', '$4', '$5') .
 if_elseif -> '$empty' : 
     [] .
 
 if_else -> 'else' block : 
-    {'else', line('$1'), '$2'} .
+    {'else', line('$1'), column('$1'), '$2'} .
 if_else -> '$empty' : 
     [] .
 
@@ -119,31 +119,31 @@ if_else -> '$empty' :
 %% stat ::= for namelist in explist do block end
 
 for_stat -> 'for' NAME '=' explist do block end : 
-	    numeric_for(line('$1'),'$2','$4','$6') .
+	    numeric_for(line('$1'),column('$1'),'$2','$4','$6') .
 for_stat -> 'for' namelist 'in' explist 'do' block 'end' :
-	    generic_for(line('$1'),'$2','$4','$6') .
+	    generic_for(line('$1'),column('$1'),'$2','$4','$6') .
 
 %% funcname ::= Name {'.' Name} [':' Name]
 
 funcname -> dottedname ':' NAME :
-		dot_append(line('$2'), '$1', {method,line('$2'),'$3'}) .
+		dot_append(line('$2'), column('$2'), '$1', {method,line('$2'),column('$2'),'$3'}) .
 funcname -> dottedname : '$1' .
 
 local_decl -> function NAME funcbody :
-		  functiondef(line('$1'),'$2','$3') .
-local_decl -> namelist : {assign,line(hd('$1')),'$1',[]} .
-local_decl -> namelist '=' explist : {assign,line('$2'),'$1','$3'} .
+		  functiondef(line('$1'),column('$1'),'$2','$3') .
+local_decl -> namelist : {assign,line(hd('$1')),column(hd('$1')),'$1',[]} .
+local_decl -> namelist '=' explist : {assign,line('$2'),column('$2'),'$1','$3'} .
 
 dottedname -> NAME : '$1'.
-dottedname -> dottedname '.' NAME : dot_append(line('$2'), '$1', '$3') . 
+dottedname -> dottedname '.' NAME : dot_append(line('$2'), column('$2'), '$1', '$3') . 
 
 varlist -> var : ['$1'] .
 varlist -> varlist ',' var : '$1' ++ ['$3'] .
 
 var -> NAME : '$1' .
 var -> prefixexp '[' exp ']' :
-	   dot_append(line('$2'), '$1', {key_field, line('$2'),'$3'}) .
-var -> prefixexp '.' NAME : dot_append(line('$2'), '$1', '$3') . 
+	   dot_append(line('$2'), column('$2'), '$1', {key_field, line('$2'), column('$2'),'$3'}) .
+var -> prefixexp '.' NAME : dot_append(line('$2'), column('$2'), '$1', '$3') . 
 
 namelist -> NAME : ['$1'] .
 namelist -> namelist ',' NAME : '$1' ++ ['$3'] .
@@ -165,12 +165,12 @@ exp -> unop : '$1' .
 
 prefixexp -> var : '$1' .
 prefixexp -> functioncall : '$1' .
-prefixexp -> '(' exp ')' : {single,line('$1'),'$2'} .
+prefixexp -> '(' exp ')' : {single,line('$1'),column('$1'),'$2'} .
 
 functioncall -> prefixexp args :
-		    dot_append(line('$1'), '$1', {functioncall,line('$1'), '$2'}) .
+		    dot_append(line('$1'), column('$1'), '$1', {functioncall,line('$1'),column('$1'), '$2'}) .
 functioncall -> prefixexp ':' NAME args :
-		    dot_append(line('$2'), '$1', {methodcall,line('$2'),'$3','$4'}) .
+		    dot_append(line('$2'), column('$2'), '$1', {methodcall,line('$2'),column('$2'),'$3','$4'}) .
 
 args -> '(' ')' : [] .
 args -> '(' explist ')' : '$2' .
@@ -178,7 +178,7 @@ args -> tableconstructor : ['$1'] .		%Syntactic sugar
 %% TODO Convert string to binary
 args -> LITERALSTRING : ['$1'] .		%Syntactic sugar
 
-functiondef -> 'function' funcbody : functiondef(line('$1'), '$2').
+functiondef -> 'function' funcbody : functiondef(line('$1'), column('$1'), '$2').
 
 funcbody -> '(' ')' block 'end' : {[],'$3'} .
 funcbody -> '(' parlist ')' block 'end' : {'$2','$4'} .
@@ -187,8 +187,8 @@ parlist -> namelist : '$1' .
 parlist -> namelist ',' '...' : '$1' ++ ['$3'] .
 parlist -> '...' : ['$1'] .
 
-tableconstructor -> '{' '}' : {table,line('$1'),[]} .
-tableconstructor -> '{' fieldlist '}' : {table,line('$1'),'$2'} .
+tableconstructor -> '{' '}' : {table,line('$1'),column('$1'),[]} .
+tableconstructor -> '{' fieldlist '}' : {table,line('$1'),column('$1'),'$2'} .
 
 %% TODO array and map constructors
 
@@ -198,10 +198,10 @@ fieldlist -> fields fieldsep : '$1' .
 fields ->  field : ['$1'] .
 fields ->  fields fieldsep field : '$1' ++ ['$3'] .
 
-field -> '[' exp ']' '=' exp : {key_field,line('$1'),'$2','$5'} .
-field -> NAME '=' exp : {name_field,line('$1'),'$1','$3'} .
+field -> '[' exp ']' '=' exp : {key_field,line('$1'),column('$1'),'$2','$5'} .
+field -> NAME '=' exp : {name_field,line('$1'),column('$1'),'$1','$3'} .
 %% TODO array elements
-field -> exp : {exp_field,line('$1'),'$1'} .
+field -> exp : {exp_field,line('$1'),column('$1'),'$1'} .
 
 fieldsep -> ',' .
 fieldsep -> ';' .
@@ -210,34 +210,34 @@ fieldsep -> ';' .
 %% exp ::= unop exp
 %% We have to write them these way for the prioriies to work.
 
-binop -> exp '+' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '-' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '*' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '/' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '//' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '%' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '^' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '&' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '|' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '~' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>>' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<<' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '==' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '~=' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<=' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>=' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '..' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp 'and' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
-binop -> exp 'or' exp : {op,line('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '+' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '-' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '*' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '/' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '//' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '%' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '^' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '&' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '|' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '~' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '>>' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '<<' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '==' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '~=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '<=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '>=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '<' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '>' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '..' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp 'and' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp 'or' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
 
-unop -> 'not' exp : {op,line('$1'),cat('$1'),'$2'} .
-unop -> '#' exp : {op,line('$1'),cat('$1'),'$2'} .
-unop -> '~' exp : {op,line('$1'),cat('$1'),'$2'} .
+unop -> 'not' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
+unop -> '#' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
+unop -> '~' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
 unop -> uminus : '$1' .
      
-uminus -> '-' exp : {op,line('$1'),'-','$2'} .
+uminus -> '-' exp : {op,line('$1'),column('$1'),'-','$2'} .
 
 Erlang code.
 
@@ -254,56 +254,58 @@ process(Tokens) ->
     end.
 
 cat(T) -> element(1, T).
+%% Token format: {Type, Line, Column} or {Type, Line, Column, Value}. Line, Column as separate elements.
 line(T) -> element(2, T).
+column(T) -> element(3, T).
 
-%% numeric_for(Line, LoopVar, [Init,Test,Upd], Block).
+%% numeric_for(Line, Column, LoopVar, [Init,Test,Upd], Block).
 
-numeric_for(Line, Var, [Init,Limit], Block) ->
-    {for, Line, Var, Init, Limit, Block};
-numeric_for(Line, Var, [Init,Limit,Step], Block) ->
-    {for, Line, Var, Init, Limit, Step, Block};
-numeric_for(Line, _, _, _) ->			%Wrong number of expressions
+numeric_for(Line, Column, Var, [Init,Limit], Block) ->
+    {for, Line, Column, Var, Init, Limit, Block};
+numeric_for(Line, Column, Var, [Init,Limit,Step], Block) ->
+    {for, Line, Column, Var, Init, Limit, Step, Block};
+numeric_for(Line, _Column, _, _, _) ->			%Wrong number of expressions
     return_error(Line, "illegal for").
 
-%% generic_for(Line, Names, ExpList, Block).
+%% generic_for(Line, Column, Names, ExpList, Block).
 
-generic_for(Line, Names, Exps, Block) ->
-    {for, Line, Names, Exps, Block}.
+generic_for(Line, Column, Names, Exps, Block) ->
+    {for, Line, Column, Names, Exps, Block}.
 
-%% functiondef(Line, Name, {Parameters,Body}).
-%% functiondef(Line, {Parameters,Body}).
+%% functiondef(Line, Column, Name, {Parameters,Body}).
+%% functiondef(Line, Column, {Parameters,Body}).
 
-functiondef(Line, Name, {Pars,Body}) ->
-    {functiondef, Line, Name, Pars, Body}.
+functiondef(Line, Column, Name, {Pars,Body}) ->
+    {functiondef, Line, Column, Name, Pars, Body}.
 
-functiondef(Line, {Pars,Body}) ->
-    {functiondef, Line, Pars, Body}.
+functiondef(Line, Column, {Pars,Body}) ->
+    {functiondef, Line, Column, Pars, Body}.
 
-%% dot_append(Line, DotList, Last) -> DotList.
+%% dot_append(Line, Column, DotList, Last) -> DotList.
 %%  Append Last to the end of a dotlist.
 
-dot_append(Line, {'.', L, H, T}, Last) ->
-    {'.', L, H, dot_append(Line, T, Last)};
-dot_append(Line, H, Last) -> {'.', Line, H, Last}.
+dot_append(Line, Column, {'.', L, C, H, T}, Last) ->
+    {'.', L, C, H, dot_append(Line, Column, T, Last)};
+dot_append(Line, Column, H, Last) -> {'.', Line, Column, H, Last}.
 
 %% check_functioncall(PrefixExp) -> PrefixExp.
 %%  Check that the PrefixExp is a proper function call/method.
 
-check_functioncall({functioncall, _, _}=C) -> 
+check_functioncall({functioncall, _, _, _}=C) -> 
     C;
-check_functioncall({methodcall, _, _, _}=M) -> 
+check_functioncall({methodcall, _, _, _, _}=M) -> 
     M;
-check_functioncall({'.', L, H, T}) ->
-    {'.', L, H, check_functioncall(T)};
+check_functioncall({'.', L, C, H, T}) ->
+    {'.', L, C, H, check_functioncall(T)};
 check_functioncall(Other) ->
     return_error(line(Other), "illegal call").
 
-condition(Tag = 'if', Line, If, IfBody, _ElseIf = [], ElseBody) ->
-    {Tag, Line, If, IfBody, ElseBody};
-condition(Tag = 'if', Line, If, IfBody, ElseIf, ElseBody) ->
-    {Tag, Line, If, IfBody, ElseIf, ElseBody}.
+condition(Tag = 'if', Line, Column, If, IfBody, _ElseIf = [], ElseBody) ->
+    {Tag, Line, Column, If, IfBody, ElseBody};
+condition(Tag = 'if', Line, Column, If, IfBody, ElseIf, ElseBody) ->
+    {Tag, Line, Column, If, IfBody, ElseIf, ElseBody}.
 
-condition(Tag = 'elseif', Line, If, IfBody, []) ->
-    {Tag, Line, If, IfBody};
-condition(Tag = 'elseif', Line, If, IfBody, ElseIf) ->
-    {Tag, Line, If, IfBody, ElseIf}.
+condition(Tag = 'elseif', Line, Column, If, IfBody, []) ->
+    {Tag, Line, Column, If, IfBody};
+condition(Tag = 'elseif', Line, Column, If, IfBody, ElseIf) ->
+    {Tag, Line, Column, If, IfBody, ElseIf}.
