@@ -15,12 +15,24 @@
 - When editing lexer/parser definitions, re-run `make` to regenerate scanner/parser modules.
 
 ## Coding Style & Naming Conventions
+- Keep lines within 80 columns (80 symbols; canonical line limit). All project
+  modules (src, test) must follow. Wrap comments and long expressions; for API
+  reference comments use two lines per item (spec on first line, description on
+  second) so each line fits.
 - Follow existing Erlang style: 4-space indents, snake_case for modules/functions/variables, and guard clauses where they aid clarity.
 - Use `-spec` and type aliases where possible to document public functions (`compile/2`, `compile/3`, etc.).
 - Prefer pattern matching and small, pure helper functions; keep side-effects inside clearly named functions (`exec`, `assign`, etc.).
 - Place repository-specific constants or fixtures under `priv/`; keep test-only helpers inside `test/`.
 
+### Naming scope (single-word rule)
+- **Do not change:** OTP conventions (e.g. `process_test`); names by Robert Virding in `interpreter_parse.yrl` (grammar, generated code, and his Erlang helpers: `numeric_for`, `generic_for`, `functiondef`, `check_functioncall`, `dot_append`, `dot_to_icall`, etc.); Leex conventions in `interpreter_scan.xrl` (`TokenLine`, `TokenCol`, etc.).
+- **In scope:** Only names we introduced in our Erlang code. Prefer a single word per function or variable; no camelCase or snake_case compound names. IfBody, ElseBody, ElseIf are kept as-is (control-flow parameters).
+- **Single-word renames applied:** `build_module`→`build`, `ModAttr`→`mod`,
+  `icall_tag`→`tag`. (Virding names and `dot_to_icall` unchanged;
+  `dot_to_icall` is this project's dot-chain→icall step, not in Luerl.)
+
 ## Testing Guidelines
+- When asked to show or list an API, provide the complete surface (every export, each with a comment); use selective or summarized description only when the user asks to assess or describe selectively.
 - Tests use EUnit with `meck` for mocking (`meck:new/2`, `meck:expect/3`); keep test functions suffixed with `_test`.
 - Add new suites to `test/` as `<module>_tests.erl`; ensure `-include_lib("eunit/include/eunit.hrl").` is present.
 - Use `?assertEqual`, `?assertError`, and `?debugVal` consistently; avoid side effects that leak process state across tests.
