@@ -25,7 +25,8 @@ L = [a-z]
 
 Rules.
 
-%% Names/identifiers. Pass Line, Column as separate params (TokenLine, TokenCol from leex).
+%% Names/identifiers. Pass Line, Column as separate params (TokenLine,
+%% TokenCol from leex).
 ({U}|{L}|_)({U}|{L}|_|{D})* :
 	name_token(TokenChars, TokenLine, TokenCol).
 %% Numbers.
@@ -134,8 +135,10 @@ Rules.
 --\[\[([^]]|\][^]])* : {error,"unfinished long comment"}.
 
 Erlang code.
-%% Leex predefined variables in rules: TokenChars, TokenLen, TokenLine, TokenCol.
-%% We pass Line and Column as separate parameters (TokenLine, TokenCol) to helpers.
+%% Leex predefined variables in rules: TokenChars, TokenLen, TokenLine,
+%% TokenCol.
+%% We pass Line and Column as separate parameters (TokenLine, TokenCol)
+%% to helpers.
 %% https://www.erlang.org/doc/apps/parsetools/leex.html
 
 -export([process/1, is_keyword/1, string_chars/1, chars/1]).
@@ -151,11 +154,12 @@ process(Code) ->
         {ok, Tokens, _EndLine} ->
             Tokens;
         {error, {_Loc, _Mod, Desc}, _} ->
-            error(_Format = format_error(Desc))
+            error(format_error(Desc))
     end.
 
 %% name_token(Chars, Line, Column) -> {token,{...}} | {error,E}.
-%%  Line, Column as separate parameters. Build a name from list of legal characters.
+%%  Line, Column as separate parameters. Build a name from list of legal
+%%  characters.
 
 name_token(Cs, Line, Column) ->
     case catch {ok,list_to_binary(Cs)} of
@@ -170,7 +174,7 @@ name_token(Cs, Line, Column) ->
 name_string(Name) ->
     binary_to_atom(Name, latin1).		%Only latin1 in Lua
 
-%% hex_float_token(TokenChars, Line, Column) -> {token,{'NUMERAL',Line,Column,Float}} | {error,E}.
+%% hex_float_token(TokenChars, Line, Column) -> {token,{...}} | {error,E}.
 
 hex_float_token(TokenChars, Line, Column) ->
     Tcs = string:substr(TokenChars, 3),
@@ -220,7 +224,7 @@ hex_fraction([C|Cs], Pow, SoFar) when C >= $A, C =< $F ->
     hex_fraction(Cs, Pow*16, SoFar + (C - $A + 10)/Pow);
 hex_fraction([], _Pow, SoFar) -> SoFar.
 
-%% string_token(InputChars, Length, Line, Column) -> {token,{'LITERALSTRING',Line,Column,String}} | {error,E}.
+%% string_token(InputChars, Length, Line, Column) -> {token,{...}} | {error,E}.
 
 string_token(Cs0, Len, Line, Column) ->
     Cs1 = string:substr(Cs0, 2, Len - 2),

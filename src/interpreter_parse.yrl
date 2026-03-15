@@ -70,8 +70,9 @@ chunk -> block : '$1'  .
 block -> stats : '$1' .
 block -> stats retstat : '$1' ++ ['$2'] .
 
-retstat -> return semi : {return,line('$1'),column('$1'),[]} .
-retstat -> return explist semi : {return,line('$1'),column('$1'),'$2'} .
+retstat -> return semi : icall(line('$1'), column('$1'), retstat, []) .
+retstat -> return explist semi :
+    icall(line('$1'), column('$1'), retstat, '$2') .
 
 semi -> ';' .					%semi is never returned
 semi -> '$empty' .
@@ -80,70 +81,82 @@ stats -> '$empty' : [] .
 stats -> stats stat : '$1' ++ ['$2'] .
 
 stat -> ';' : '$1' .
-stat -> varlist '=' explist : {assign,line('$2'),column('$2'),'$1','$3'} .
+stat -> varlist '=' explist :
+    icall(line('$2'), column('$2'), assign, ['$1','$3']) .
 %% Following functioncall rule removed to stop reduce-reduce conflict.
 %% Replaced with a prefixexp which should give the same. We hope!
 %%stat -> functioncall : '$1' .
 stat -> prefixexp : check_functioncall('$1') .
 stat -> label_stat : '$1' .
-stat -> 'break' : {break,line('$1'),column('$1')} .
-stat -> 'goto' NAME : {goto,line('$1'),column('$1'),'$2'} .
-stat -> 'do' block 'end' : {block,line('$1'),column('$1'),'$2'} .
+stat -> 'break' : icall(line('$1'), column('$1'), break, []) .
+stat -> 'goto' NAME : icall(line('$1'), column('$1'), goto, ['$2']) .
+stat -> 'do' block 'end' : icall(line('$1'), column('$1'), block, ['$2']) .
 stat -> while_stat : '$1' .
 stat -> repeat_stat : '$1' .
 stat -> if_stat : '$1' .
 stat -> for_stat : '$1' .
-stat -> function funcname funcbody : functiondef(line('$1'),column('$1'),'$2','$3') .
-stat -> local local_decl : {local,line('$1'),column('$1'),'$2'} .
+stat -> function funcname funcbody :
+    functiondef(line('$1'), column('$1'), '$2', '$3') .
+stat -> local local_decl : icall(line('$1'), column('$1'), local, ['$2']) .
 
-label_stat -> '::' NAME '::' : {label,line('$1'),column('$1'),'$2'} .
+label_stat -> '::' NAME '::' : icall(line('$1'), column('$1'), label, ['$2']) .
 
-while_stat -> 'while' exp 'do' block 'end' : {while,line('$1'),column('$1'),'$2','$4'} .
+while_stat -> 'while' exp 'do' block 'end' :
+    icall(line('$1'), column('$1'), while, ['$2', '$4']) .
 
-repeat_stat -> 'repeat' block 'until' exp : {repeat,line('$1'),column('$1'),'$2','$4'} .
+repeat_stat -> 'repeat' block 'until' exp :
+    icall(line('$1'), column('$1'), repeat, ['$2', '$4']) .
 
 if_stat -> 'if' exp 'then' block if_elseif if_else 'end' :
     condition('if', line('$1'), column('$1'), '$2', '$4', '$5', '$6') .
 
-if_elseif -> 'elseif' exp 'then' block if_elseif: 
+if_elseif -> 'elseif' exp 'then' block if_elseif:
     condition('elseif', line('$1'), column('$1'), '$2', '$4', '$5') .
-if_elseif -> '$empty' : 
+if_elseif -> '$empty' :
     [] .
 
-if_else -> 'else' block : 
-    {'else', line('$1'), column('$1'), '$2'} .
-if_else -> '$empty' : 
+if_else -> 'else' block :
+    icall(line('$1'), column('$1'), 'else', ['$2']) .
+if_else -> '$empty' :
     [] .
 
 %% stat ::= for Name '=' exp ',' exp [',' exp] do block end
 %% stat ::= for namelist in explist do block end
 
-for_stat -> 'for' NAME '=' explist do block end : 
-	    numeric_for(line('$1'),column('$1'),'$2','$4','$6') .
+for_stat -> 'for' NAME '=' explist do block end :
+        numeric_for(line('$1'),column('$1'),'$2','$4','$6') .
 for_stat -> 'for' namelist 'in' explist 'do' block 'end' :
-	    generic_for(line('$1'),column('$1'),'$2','$4','$6') .
+        generic_for(line('$1'),column('$1'),'$2','$4','$6') .
 
 %% funcname ::= Name {'.' Name} [':' Name]
 
 funcname -> dottedname ':' NAME :
-		dot_append(line('$2'), column('$2'), '$1', {method,line('$2'),column('$2'),'$3'}) .
+    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
+        icall(line('$2'), column('$2'), method, ['$3']))) .
 funcname -> dottedname : '$1' .
 
 local_decl -> function NAME funcbody :
-		  functiondef(line('$1'),column('$1'),'$2','$3') .
-local_decl -> namelist : {assign,line(hd('$1')),column(hd('$1')),'$1',[]} .
-local_decl -> namelist '=' explist : {assign,line('$2'),column('$2'),'$1','$3'} .
+          functiondef(line('$1'),column('$1'),'$2','$3') .
+local_decl -> namelist :
+    icall(line(hd('$1')), column(hd('$1')), assign, ['$1', erl_syntax:nil()]) .
+local_decl -> namelist '=' explist :
+    icall(line('$2'), column('$2'), assign, ['$1', '$3']) .
 
 dottedname -> NAME : '$1'.
-dottedname -> dottedname '.' NAME : dot_append(line('$2'), column('$2'), '$1', '$3') . 
+dottedname -> dottedname '.' NAME :
+    dot_to_icall(dot_append(line('$2'), column('$2'), '$1', '$3')) .
 
 varlist -> var : ['$1'] .
 varlist -> varlist ',' var : '$1' ++ ['$3'] .
 
-var -> NAME : '$1' .
+var -> NAME :
+    access(line('$1'), column('$1'),
+        [erl_syntax:string(element(4, '$1'))]) .
 var -> prefixexp '[' exp ']' :
-	   dot_append(line('$2'), column('$2'), '$1', {key_field, line('$2'), column('$2'),'$3'}) .
-var -> prefixexp '.' NAME : dot_append(line('$2'), column('$2'), '$1', '$3') . 
+    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
+        icall(line('$2'), column('$2'), key_field, ['$3']))) .
+var -> prefixexp '.' NAME :
+    dot_to_icall(dot_append(line('$2'), column('$2'), '$1', '$3')) .
 
 namelist -> NAME : ['$1'] .
 namelist -> namelist ',' NAME : '$1' ++ ['$3'] .
@@ -151,26 +164,30 @@ namelist -> namelist ',' NAME : '$1' ++ ['$3'] .
 explist -> exp : ['$1'] .
 explist -> explist ',' exp : '$1' ++ ['$3'] .
 
-exp -> 'nil' : '$1' .
-exp -> 'false' : '$1' .
-exp -> 'true' : '$1' .
-exp -> NUMERAL : '$1' .
-exp -> LITERALSTRING : '$1' .
-exp -> '...' : '$1' .
-exp -> functiondef : '$1' .
-exp -> prefixexp : '$1' .
+exp -> 'nil'         : icall(line('$1'), column('$1'), 'nil', []) .
+exp -> 'false'       : icall(line('$1'), column('$1'), 'false', []) .
+exp -> 'true'        : icall(line('$1'), column('$1'), 'true', []) .
+exp -> NUMERAL       :
+    icall(line('$1'), column('$1'), numeral, [erl_syntax:abstract(element(4,'$1'))]) .
+exp -> LITERALSTRING :
+    icall(line('$1'), column('$1'), literalstring, [erl_syntax:string(element(4,'$1'))]) .
+exp -> '...'         : icall(line('$1'), column('$1'), vararg, []) .
+exp -> functiondef   : '$1' .
+exp -> prefixexp     : '$1' .
 exp -> tableconstructor : '$1' .
-exp -> binop : '$1' . 
-exp -> unop : '$1' .
+exp -> binop         : '$1' .
+exp -> unop          : '$1' .
 
 prefixexp -> var : '$1' .
 prefixexp -> functioncall : '$1' .
-prefixexp -> '(' exp ')' : {single,line('$1'),column('$1'),'$2'} .
+prefixexp -> '(' exp ')' : icall(line('$1'), column('$1'), single, ['$2']) .
 
 functioncall -> prefixexp args :
-		    dot_append(line('$1'), column('$1'), '$1', {functioncall,line('$1'),column('$1'), '$2'}) .
+    dot_to_icall(dot_append(line('$1'), column('$1'), '$1',
+        icall(line('$1'), column('$1'), functioncall, ['$2']))) .
 functioncall -> prefixexp ':' NAME args :
-		    dot_append(line('$2'), column('$2'), '$1', {methodcall,line('$2'),column('$2'),'$3','$4'}) .
+    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
+        icall(line('$2'), column('$2'), methodcall, ['$3', '$4']))) .
 
 args -> '(' ')' : [] .
 args -> '(' explist ')' : '$2' .
@@ -178,7 +195,8 @@ args -> tableconstructor : ['$1'] .		%Syntactic sugar
 %% TODO Convert string to binary
 args -> LITERALSTRING : ['$1'] .		%Syntactic sugar
 
-functiondef -> 'function' funcbody : functiondef(line('$1'), column('$1'), '$2').
+functiondef -> 'function' funcbody :
+    functiondef(line('$1'), column('$1'), '$2').
 
 funcbody -> '(' ')' block 'end' : {[],'$3'} .
 funcbody -> '(' parlist ')' block 'end' : {'$2','$4'} .
@@ -187,125 +205,249 @@ parlist -> namelist : '$1' .
 parlist -> namelist ',' '...' : '$1' ++ ['$3'] .
 parlist -> '...' : ['$1'] .
 
-tableconstructor -> '{' '}' : {table,line('$1'),column('$1'),[]} .
-tableconstructor -> '{' fieldlist '}' : {table,line('$1'),column('$1'),'$2'} .
+%% Table constructor {...}: semantic rules (grammar + icall shape) are in place.
+%% Runtime: table(Module, []) or table(Module, [FieldList]) must be implemented
+%% (e.g. primitive or in exp): evaluate field list (key_field, name_field,
+%% exp_field) and build a Lua table value. Implement when adding table
+%% semantics.
+tableconstructor -> '{' '}' :
+    icall(line('$1'), column('$1'), table, [erl_syntax:nil()]) .
+tableconstructor -> '{' fieldlist '}' :
+    icall(line('$1'), column('$1'), table, ['$2']) .
 
 %% TODO array and map constructors
 
 fieldlist -> fields : '$1' .
 fieldlist -> fields fieldsep : '$1' .
 
-fields ->  field : ['$1'] .
-fields ->  fields fieldsep field : '$1' ++ ['$3'] .
+fields -> field : ['$1'] .
+fields -> fields fieldsep field : '$1' ++ ['$3'] .
 
-field -> '[' exp ']' '=' exp : {key_field,line('$1'),column('$1'),'$2','$5'} .
-field -> NAME '=' exp : {name_field,line('$1'),column('$1'),'$1','$3'} .
+field -> '[' exp ']' '=' exp :
+    icall(line('$1'), column('$1'), key_field, ['$2', '$5']) .
+field -> NAME '=' exp :
+    icall(line('$1'), column('$1'), name_field, ['$1', '$3']) .
 %% TODO array elements
-field -> exp : {exp_field,line('$1'),column('$1'),'$1'} .
+field -> exp :
+    icall(line('$1'), column('$1'), exp_field, ['$1']) .
 
 fieldsep -> ',' .
 fieldsep -> ';' .
 
 %% exp ::= exp binop exp
 %% exp ::= unop exp
-%% We have to write them these way for the prioriies to work.
+%% We have to write them these way for the priorities to work.
 
-binop -> exp '+' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '-' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '*' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '/' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '//' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '%' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '^' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '&' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '|' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '~' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>>' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<<' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '==' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '~=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>=' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '<' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '>' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp '..' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp 'and' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
-binop -> exp 'or' exp : {op,line('$2'),column('$2'),cat('$2'),'$1','$3'}.
+binop -> exp '+'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '-'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '*'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '/'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '//' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '%'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '^'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '&'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '|'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '~'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '>>' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '<<' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '==' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '~=' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '<=' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '>=' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '<'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '>'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp '..' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp 'and' exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+binop -> exp 'or'  exp :
+    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
 
-unop -> 'not' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
-unop -> '#' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
-unop -> '~' exp : {op,line('$1'),column('$1'),cat('$1'),'$2'} .
+unop -> 'not' exp :
+    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
+unop -> '#'   exp :
+    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
+unop -> '~'   exp :
+    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
 unop -> uminus : '$1' .
-     
-uminus -> '-' exp : {op,line('$1'),column('$1'),'-','$2'} .
+
+uminus -> '-' exp :
+    icall(line('$1'), column('$1'), op, [erl_syntax:atom('-'), '$2']) .
 
 Erlang code.
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("syntax_tools/include/erl_syntax.hrl").
 
--export([process/1]).
+%% Grammar (above) and AST construction (below) in one module; compact.
+%% This module only: functions follow two-line style (head -> ; body on next).
+%% We use only erl_syntax here for AST construction; convenient and uniform.
+%% Primitives moved to interpreter.erl; called via LFH (local calls).
+%% Cell access (exec/3,4) emitted as Module:exec(...) via access helper.
 
-process_test() -> ok.
+-export([process/1, process/2, inject/2]).
 
+process_test() ->
+    ok.
+
+%% -----------------------------------------------------------------------------
+%% Module in the final tree (implementation record)
+%% -----------------------------------------------------------------------------
+%% Module is required. Parser emits variable('Module'). process/2 uses Merl
+%% (inject/2) post-parse to replace it with atom(Module). No process dictionary.
+%% Evaluation: erl_eval + LFH (route/2) dispatches local calls to
+%% primitives. EFH (guard/2) gates Module:exec/eval (security).
+%% -----------------------------------------------------------------------------
+
+%% Returns parsed AST body. Parse errors raise; caller handles.
+%% (Ours; R.Virding Luerl has chunk/1 instead.) Use process/2 for run pipeline.
 process(Tokens) ->
     case parse(Tokens) of
-        {error, {_Line, _Mod, Desc}} -> error(_Format = format_error(Desc));
-        {ok,Code} -> Code
+        {error, {Line, _Mod, Desc}} ->
+            error({parse_error, Line, format_error(Desc)});
+        {ok, Body} -> Body
     end.
 
-cat(T) -> element(1, T).
-%% Token format: {Type, Line, Column} or {Type, Line, Column, Value}. Line, Column as separate elements.
-line(T) -> element(2, T).
-column(T) -> element(3, T).
+%% Like process/1; injects Module into tree via Merl (variable -> atom).
+process(Tokens, Module) ->
+    Body = process(Tokens),
+    inject(Body, Module).
 
-%% numeric_for(Line, Column, LoopVar, [Init,Test,Upd], Block).
+%% Merl-based: replace variable('Module') with atom(Module). Module required.
+inject(Body, Module) when is_list(Body) ->
+    T = merl:template(Body),
+    merl:tree(merl:subst(T, [{'Module', merl:term(Module)}]));
+inject(Tree, Module) ->
+    T = merl:template(Tree),
+    merl:tree(merl:subst(T, [{'Module', merl:term(Module)}])).
+
+%% Primitives (assert, assign, etc.) and semantic stubs (chunk, block,
+%% stats, etc.) moved to interpreter.erl; called via LFH (handler/0).
+%% Cell access: access helper emits Module:exec(...) (qualified; EFH gates).
+%% Grammar helpers below are parser-internal.
+
+cat(T) ->  %% R.Virding.
+    element(1, T).
+%% Token format: {Type, Line, Column} or {Type, Line, Column, Value}.
+%% Line, Column as separate elements.
+line(T) ->  %% R.Virding.
+    element(2, T).
+column(T) ->  %% Ours (Column); Luerl has line only.
+    element(3, T).
+
+%% numeric_for(Line, Column, LoopVar, [Init,Test,Upd], Block). R.Virding.
 
 numeric_for(Line, Column, Var, [Init,Limit], Block) ->
-    {for, Line, Column, Var, Init, Limit, Block};
+    icall(Line, Column, for, [Var, Init, Limit, Block]);
 numeric_for(Line, Column, Var, [Init,Limit,Step], Block) ->
-    {for, Line, Column, Var, Init, Limit, Step, Block};
-numeric_for(Line, _Column, _, _, _) ->			%Wrong number of expressions
+    icall(Line, Column, for, [Var, Init, Limit, Step, Block]);
+numeric_for(Line, _Column, _, _, _) ->
     return_error(Line, "illegal for").
 
-%% generic_for(Line, Column, Names, ExpList, Block).
+%% generic_for(Line, Column, Names, ExpList, Block). R.Virding.
 
 generic_for(Line, Column, Names, Exps, Block) ->
-    {for, Line, Column, Names, Exps, Block}.
+    icall(Line, Column, for, [Names, Exps, Block]).
 
-%% functiondef(Line, Column, Name, {Parameters,Body}).
+%% functiondef(Line, Column, Name, {Parameters,Body}). R.Virding.
 %% functiondef(Line, Column, {Parameters,Body}).
 
 functiondef(Line, Column, Name, {Pars,Body}) ->
-    {functiondef, Line, Column, Name, Pars, Body}.
+    icall(Line, Column, functiondef, [Name, Pars, Body]).
 
 functiondef(Line, Column, {Pars,Body}) ->
-    {functiondef, Line, Column, Pars, Body}.
+    icall(Line, Column, functiondef, [Pars, Body]).
 
-%% dot_append(Line, Column, DotList, Last) -> DotList.
-%%  Append Last to the end of a dotlist.
+%% dot_append(Line, Column, DotList, Last) -> DotList. R.Virding.
+%%  Append Last to the end of a dotlist. Builds {'.', ...} internally;
+%%  grammar rules that expose the chain as output wrap with dot_to_icall/1.
+%%  dot_to_icall: ours (dot chain -> icall); R.Virding Luerl has no equivalent.
 
 dot_append(Line, Column, {'.', L, C, H, T}, Last) ->
     {'.', L, C, H, dot_append(Line, Column, T, Last)};
-dot_append(Line, Column, H, Last) -> {'.', Line, Column, H, Last}.
+dot_append(Line, Column, H, Last) ->
+    {'.', Line, Column, H, Last}.
 
-%% check_functioncall(PrefixExp) -> PrefixExp.
+dot_to_icall({'.', L, C, H, T}) ->
+    icall(L, C, '.', [dot_to_icall(H), dot_to_icall(T)]);
+dot_to_icall(Other) ->
+    Other.
+
+%% check_functioncall(PrefixExp) -> PrefixExp. R.Virding.
 %%  Check that the PrefixExp is a proper function call/method.
 
-check_functioncall({functioncall, _, _, _}=C) -> 
-    C;
-check_functioncall({methodcall, _, _, _, _}=M) -> 
-    M;
-check_functioncall({'.', L, C, H, T}) ->
-    {'.', L, C, H, check_functioncall(T)};
-check_functioncall(Other) ->
-    return_error(line(Other), "illegal call").
+check_functioncall(Node) ->
+    case tag(Node) of  %% tag: was icall_tag.
+        functioncall -> Node;
+        methodcall   -> Node;
+        _ ->
+            case Node of
+                {'.', L, C, H, T} ->
+                    dot_to_icall({'.', L, C, H, check_functioncall(T)});
+                _ -> return_error(line(Node), "illegal call")
+            end
+    end.
 
-condition(Tag = 'if', Line, Column, If, IfBody, _ElseIf = [], ElseBody) ->
-    {Tag, Line, Column, If, IfBody, ElseBody};
-condition(Tag = 'if', Line, Column, If, IfBody, ElseIf, ElseBody) ->
-    {Tag, Line, Column, If, IfBody, ElseIf, ElseBody}.
+%% tag(Node) -> atom() | undefined. Was icall_tag.
+%%  Extracts the interpreter function name from an icall erl_syntax node.
 
-condition(Tag = 'elseif', Line, Column, If, IfBody, []) ->
-    {Tag, Line, Column, If, IfBody};
-condition(Tag = 'elseif', Line, Column, If, IfBody, ElseIf) ->
-    {Tag, Line, Column, If, IfBody, ElseIf}.
+tag(Node) ->
+    try erl_syntax:atom_value(
+            erl_syntax:module_qualifier_argument(
+                erl_syntax:application_operator(Node)))
+    catch _:_ -> undefined end.
+
+%% condition, icall: ours (icall-based AST); no direct R.Virding equivalent.
+condition('if', Line, Column, If, IfBody, _ElseIf = [], ElseBody) ->
+    icall(Line, Column, 'if', [If, IfBody, ElseBody]);
+condition('if', Line, Column, If, IfBody, ElseIf, ElseBody) ->
+    icall(Line, Column, 'if', [If, IfBody, ElseIf, ElseBody]).
+
+condition('elseif', Line, Column, If, IfBody, []) ->
+    icall(Line, Column, elseif, [If, IfBody]);
+condition('elseif', Line, Column, If, IfBody, ElseIf) ->
+    icall(Line, Column, elseif, [If, IfBody, ElseIf]).
+
+%% icall(Line, Column, Fun, Args) -> erl_syntax node for
+%%   Fun(Module, Args...).
+%% Local call; LFH (interpreter:handler/0) dispatches at eval time.
+%% First arg is always variable('Module'); Merl injects atom(Module).
+
+icall(Line, Column, Fun, Args) when is_list(Args) ->
+    Node = erl_syntax:application(
+        erl_syntax:atom(Fun),
+        [erl_syntax:variable('Module') | Args]),
+    erl_syntax:set_pos(Node, {Line, Column});
+icall(Line, Column, Fun, Arg) ->
+    icall(Line, Column, Fun, [Arg]).
+
+%% access(Line, Column, Args) -> erl_syntax node for
+%%   Module:exec(Args...).
+%% Qualified call to callback module; cell read/write. EFH (guard/2)
+%% gates for security; only exec and eval allowed.
+
+access(Line, Column, Args) when is_list(Args) ->
+    Node = erl_syntax:application(
+        erl_syntax:module_qualifier(
+            erl_syntax:variable('Module'),
+            erl_syntax:atom(exec)),
+        Args),
+    erl_syntax:set_pos(Node, {Line, Column}).

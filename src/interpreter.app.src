@@ -4,7 +4,7 @@
   {vsn,          "0.0.1"},
   {modules,      []},
   {applications, [
-                  kernel, stdlib
+                  kernel, stdlib, syntax_tools
                  ]},
 
   {licenses, ["apache-2.0"]},
