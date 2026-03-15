@@ -16,6 +16,7 @@ RUN apk add git
 RUN apk add curl
 
 RUN apk add htop
+RUN apk add fastfetch
 RUN apk add file
 
 RUN apk add gcompat
