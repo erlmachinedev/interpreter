@@ -3,7 +3,7 @@
 	"build": {
 		"dockerfile": "Dockerfile",
 		"args": {
-			"VARIANT": "29.0.0-alpine"
+			"VARIANT": "27.3.4.9-alpine"
 		}
 	},
 	"customizations": {
