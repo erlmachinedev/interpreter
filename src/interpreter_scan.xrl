@@ -148,14 +148,36 @@ Erlang code.
 process_test() -> ok.
 
 %% string/1 (leex-generated) returns {ok, Tokens, EndLine} | {error, ...}.
--spec process(string()) -> [term()].
+-spec process(string()) ->
+    {ok, [term()]} | {error, {integer(), integer(), string()}}.
 process(Code) ->
-    case string(Code) of
-        {ok, Tokens, _EndLine} ->
-            Tokens;
-        {error, {_Loc, _Mod, Desc}, _} ->
-            error(format_error(Desc))
+    case string(Code, {1, 1}) of
+        {ok, Tokens, _EndLoc} ->
+            {ok, Tokens};
+        {error, {{Line, Column}, _Mod, Desc}, _EndLoc} ->
+            {error, {Line, Column, format_error(Desc)}}
     end.
+
+%% -----------------------------------------------------------------------------
+%% Exact terms returned under Descriptor (normalized to string):
+%%
+%% Origin          | Engine Descriptor    | Normalized Descriptor (string)
+%% ----------------|----------------------|-------------------------------------
+%% Leex engine     | {illegal, Character} | "unexpected characters \"...\""
+%% Rule (Numbers)  | "illegal number"     | "illegal number"
+%% Rule (Floats)   | "malformed number"   | "malformed number"
+%% Rule (Strings)  | "illegal string"     | "illegal string"
+%% Rule (Names)    | "illegal name"       | "illegal name"
+%% Rule (Comments) | "unfinished ..."     | "unfinished long comment"
+%% -----------------------------------------------------------------------------
+
+format_error({illegal, S}) ->
+    Args = [io_lib:write_string(S)],
+    lists:flatten(io_lib:format("unexpected characters ~s", Args));
+format_error(S) when is_list(S) ->
+    S;
+format_error(S) ->
+    lists:flatten(io_lib:write(S)).
 
 %% name_token(Chars, Line, Column) -> {token,{...}} | {error,E}.
 %%  Line, Column as separate parameters. Build a name from list of legal

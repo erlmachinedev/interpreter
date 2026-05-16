@@ -15,6 +15,137 @@
 %% File    : interpreter_parse.yrl
 %% Author  : Robert Virding
 %% Purpose : Parser for LUA 5.2.
+%%
+%% Lua tree
+%% --------
+%% Semantic actions build neutral Lua tuples: `{Prim, Line, Column, Args}`.
+%% The parser does not embed a host module, Erlang abstract syntax, or
+%% evaluation workaround. Later compiler passes decide whether a tuple becomes
+%% a closure, a direct runtime primitive call, or a validation error.
+%%
+%% API: `process/1` — scan tokens -> Lua tree only.
+%%
+%% Summary — this fork vs Virding’s `luerl_parse` (Luerl, rvirding/luerl)
+%% -----------------------------------------------------------------
+%% BNF matches the Lua 5.2 manual + Weimer `stat` fix; semantic actions
+%% differ (see Luerl `develop` for the reference tuple IR):
+%%   • IR: Luerl emits tagged tuples and token passthrough; here grammar
+%%     actions emit `{Prim, Line, Column, Args}` with column included.
+%%   • Position: we thread `line/1` and `column/1`; dot chains use
+%%     `{'.', L, C, H, T}` and `dot_append/4` (Luerl’s `'.'` is line-only).
+%%   • Stats: Lua 5.2-style `function` / `local` on `stat`; we omit Luerl’s
+%%     `func_stat` / `local_stat` / `attnamelist` (5.3+ attribute locals).
+%%   • if: `condition/6` and Lua tuples for `if` / `elseif` / `else`, not
+%%     Luerl’s one `{'if', Line, [test/block pairs], else}` tuple.
+%%   • var: `NAME` -> `{var, Line, Column, [Name]}`, not raw `$1`.
+%%   • check_functioncall / tag: tuple tree and `'.'`; Luerl matches
+%%     tuple `{functioncall,…}` / `{'.',…}`.
+%%   • Entry: `process/1` here; Luerl `chunk/1` wraps the body (see their
+%%     Erlang block).
+%%
+%% Detailed comparison with Luerl `luerl_parse.yrl`
+%% ------------------------------------------------
+%% Reference checked against `rvirding/luerl`, branch `develop`, file
+%% `src/luerl_parse.yrl`. That parser is the baseline for the grammar and
+%% grammar helper names used here, but the tree contract is deliberately
+%% different.
+%%
+%% Entry point:
+%%   - Luerl exports `chunk/1` and returns a callable nameless function:
+%%       `{functiondef, 1, [{'...', 1}], Body}`.
+%%   - This parser exports `process/1` and returns the chunk body directly:
+%%       `[Stat, ...]`.
+%%     The later interpreter/compiler stage decides whether to wrap the chunk
+%%     as a function, closure, or host-specific program object.
+%%
+%% Position data:
+%%   - Luerl tree tuples carry line only.
+%%   - Luerl's synthetic chunk wrapper uses line `1` because it creates a
+%%     parser-entry function wrapper that has no source token of its own.
+%%   - This parser carries `{Line, Column}` in every constructed primitive
+%%     tuple: `{Primitive, Line, Column, Args}`.
+%%   - This parser does not synthesize wrapper positions. Every emitted
+%%     primitive position must come from `line(Token)` / `column(Token)` or
+%%     from helper arguments that were themselves derived from a source token.
+%%     Do not hardcode or guess line/column values in grammar actions.
+%%     Tokens still keep their scanner shape where grammar rules pass tokens
+%%     through unchanged.
+%%
+%% Primitive tuple shape:
+%%   - Luerl uses per-primitive tuple arities, for example:
+%%       `{assign, Line, Vars, Exps}`
+%%       `{while, Line, Cond, Block}`
+%%       `{op, Line, Op, Left, Right}`
+%%       `{functiondef, Line, Name, Pars, Body}`
+%%   - This parser uses one uniform primitive shape:
+%%       `{assign, Line, Column, [Vars, Exps]}`
+%%       `{while, Line, Column, [Cond, Block]}`
+%%       `{op, Line, Column, [Op, Left, Right]}`
+%%       `{functiondef, Line, Column, [Name, Pars, Body]}`
+%%     The uniform `Args` list makes the following closure-lowering pass
+%%     simple: each primitive compiles from one tuple shape.
+%%
+%% Raw token passthrough:
+%%   - Luerl leaves many leaves as scanner tokens: NAME, NUMERAL,
+%%     LITERALSTRING, `nil`, `false`, `true`, and `...`.
+%%   - This parser constructs explicit tuples for most expression leaves:
+%%       `{var, Line, Column, [Name]}`
+%%       `{numeral, Line, Column, [Value]}`
+%%       `{literalstring, Line, Column, [Value]}`
+%%       `{'nil' | 'false' | 'true' | vararg, Line, Column, []}`
+%%     NAME tokens are still preserved where the grammar needs declaration
+%%     syntax first, for example namelists and function parameter lists.
+%%
+%% Function and local statements:
+%%   - Luerl uses separate nonterminals `func_stat` and `local_stat`.
+%%     Its current grammar also includes `attnamelist`, `attname`, and
+%%     `attrib`, matching newer Lua local-attribute syntax.
+%%   - This parser keeps Lua 5.2-oriented statement rules directly under
+%%     `stat`: `function funcname funcbody` and `local local_decl`.
+%%     Local attributes are intentionally absent.
+%%
+%% If/elseif/else:
+%%   - Luerl lowers an if-chain to one tuple:
+%%       `{'if', Line, [{Cond, Block}, ...], ElseBlock}`.
+%%     Elseif branches are accumulated as a list of `{Cond, Block}` pairs.
+%%   - This parser keeps branch markers as primitive tuples:
+%%       `{'if', Line, Column, [Cond, IfBody, ElseBody]}`
+%%       `{'if', Line, Column, [Cond, IfBody, ElseIf, ElseBody]}`
+%%       `{elseif, Line, Column, [Cond, Body | Rest]}`
+%%       `{'else', Line, Column, [Body]}`
+%%     The closure compiler can either keep that shape or normalize it to
+%%     Luerl's pair-list shape before lowering.
+%%
+%% Dot chains and calls:
+%%   - Luerl's `dot_append/3` produces `{'.', Line, Head, Tail}` and leaves
+%%     that dotted chain as the parser result.
+%%   - This parser tracks columns while building the temporary chain:
+%%       `{'.', Line, Column, Head, Tail}`
+%%     Grammar rules that expose the chain call `dot_to_tree/1`, producing
+%%     the uniform primitive tuple:
+%%       `{'.', Line, Column, [Head, Tail]}`.
+%%   - Both parsers use `check_functioncall/1` to reject invalid statement
+%%     prefix expressions after the Florian Weimer reduce-conflict fix.
+%%   - Luerl implements that check with explicit success clauses:
+%%       `{functioncall, _, _}`
+%%       `{methodcall, _, _, _}`
+%%       `{'.', Line, Head, Tail}`
+%%     followed by `Other -> return_error(line(Other), "illegal call")`.
+%%     That final clause is an error path, not a default value. Here we keep
+%%     the same intent but avoid a broad `Other` fallback: accepted call
+%%     shapes and token error shapes are separate clauses.
+%%
+%% Loops, tables, fields, and operators:
+%%   - Grammar and precedence remain close to Luerl, including the existing
+%%     operator set (`//`, bitwise, shifts) even though strict Lua 5.2 does
+%%     not include those operators.
+%%   - Tree construction differs only by shape:
+%%       Luerl: primitive-specific arity, line only.
+%%       Here: `{Primitive, Line, Column, Args}`.
+%%
+%% This file should stay a parser. It must not rebuild the removed Erlang
+%% abstract-form path, host-module injection, or evaluation workaround. The
+%% next stage owns lexical resolution and closure construction.
 
 %% The Grammar rules here are taken directly from the LUA 5.2
 %% manual. Unfortunately it is not an LALR(1) grammar but I have
@@ -70,9 +201,9 @@ chunk -> block : '$1'  .
 block -> stats : '$1' .
 block -> stats retstat : '$1' ++ ['$2'] .
 
-retstat -> return semi : icall(line('$1'), column('$1'), retstat, []) .
+retstat -> return semi : {return, line('$1'), column('$1'), []} .
 retstat -> return explist semi :
-    icall(line('$1'), column('$1'), retstat, '$2') .
+    {return, line('$1'), column('$1'), '$2'} .
 
 semi -> ';' .					%semi is never returned
 semi -> '$empty' .
@@ -82,30 +213,30 @@ stats -> stats stat : '$1' ++ ['$2'] .
 
 stat -> ';' : '$1' .
 stat -> varlist '=' explist :
-    icall(line('$2'), column('$2'), assign, ['$1','$3']) .
+    {assign, line('$2'), column('$2'), ['$1', '$3']} .
 %% Following functioncall rule removed to stop reduce-reduce conflict.
 %% Replaced with a prefixexp which should give the same. We hope!
 %%stat -> functioncall : '$1' .
 stat -> prefixexp : check_functioncall('$1') .
 stat -> label_stat : '$1' .
-stat -> 'break' : icall(line('$1'), column('$1'), break, []) .
-stat -> 'goto' NAME : icall(line('$1'), column('$1'), goto, ['$2']) .
-stat -> 'do' block 'end' : icall(line('$1'), column('$1'), block, ['$2']) .
+stat -> 'break' : {break, line('$1'), column('$1'), []} .
+stat -> 'goto' NAME : {goto, line('$1'), column('$1'), ['$2']} .
+stat -> 'do' block 'end' : {block, line('$1'), column('$1'), ['$2']} .
 stat -> while_stat : '$1' .
 stat -> repeat_stat : '$1' .
 stat -> if_stat : '$1' .
 stat -> for_stat : '$1' .
 stat -> function funcname funcbody :
     functiondef(line('$1'), column('$1'), '$2', '$3') .
-stat -> local local_decl : icall(line('$1'), column('$1'), local, ['$2']) .
+stat -> local local_decl : {local, line('$1'), column('$1'), ['$2']} .
 
-label_stat -> '::' NAME '::' : icall(line('$1'), column('$1'), label, ['$2']) .
+label_stat -> '::' NAME '::' : {label, line('$1'), column('$1'), ['$2']} .
 
 while_stat -> 'while' exp 'do' block 'end' :
-    icall(line('$1'), column('$1'), while, ['$2', '$4']) .
+    {while, line('$1'), column('$1'), ['$2', '$4']} .
 
 repeat_stat -> 'repeat' block 'until' exp :
-    icall(line('$1'), column('$1'), repeat, ['$2', '$4']) .
+    {repeat, line('$1'), column('$1'), ['$2', '$4']} .
 
 if_stat -> 'if' exp 'then' block if_elseif if_else 'end' :
     condition('if', line('$1'), column('$1'), '$2', '$4', '$5', '$6') .
@@ -116,7 +247,7 @@ if_elseif -> '$empty' :
     [] .
 
 if_else -> 'else' block :
-    icall(line('$1'), column('$1'), 'else', ['$2']) .
+    {'else', line('$1'), column('$1'), ['$2']} .
 if_else -> '$empty' :
     [] .
 
@@ -131,32 +262,31 @@ for_stat -> 'for' namelist 'in' explist 'do' block 'end' :
 %% funcname ::= Name {'.' Name} [':' Name]
 
 funcname -> dottedname ':' NAME :
-    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
-        icall(line('$2'), column('$2'), method, ['$3']))) .
+    dot_to_tree(dot_append(line('$2'), column('$2'), '$1',
+        {method, line('$2'), column('$2'), ['$3']})) .
 funcname -> dottedname : '$1' .
 
 local_decl -> function NAME funcbody :
           functiondef(line('$1'),column('$1'),'$2','$3') .
 local_decl -> namelist :
-    icall(line(hd('$1')), column(hd('$1')), assign, ['$1', erl_syntax:nil()]) .
+    {assign, line(hd('$1')), column(hd('$1')), ['$1', nil]} .
 local_decl -> namelist '=' explist :
-    icall(line('$2'), column('$2'), assign, ['$1', '$3']) .
+    {assign, line('$2'), column('$2'), ['$1', '$3']} .
 
 dottedname -> NAME : '$1'.
 dottedname -> dottedname '.' NAME :
-    dot_to_icall(dot_append(line('$2'), column('$2'), '$1', '$3')) .
+    dot_to_tree(dot_append(line('$2'), column('$2'), '$1', '$3')) .
 
 varlist -> var : ['$1'] .
 varlist -> varlist ',' var : '$1' ++ ['$3'] .
 
 var -> NAME :
-    access(line('$1'), column('$1'),
-        [erl_syntax:string(element(4, '$1'))]) .
+    {var, line('$1'), column('$1'), [element(4, '$1')]} .
 var -> prefixexp '[' exp ']' :
-    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
-        icall(line('$2'), column('$2'), key_field, ['$3']))) .
+    dot_to_tree(dot_append(line('$2'), column('$2'), '$1',
+        {key_field, line('$2'), column('$2'), ['$3']})) .
 var -> prefixexp '.' NAME :
-    dot_to_icall(dot_append(line('$2'), column('$2'), '$1', '$3')) .
+    dot_to_tree(dot_append(line('$2'), column('$2'), '$1', '$3')) .
 
 namelist -> NAME : ['$1'] .
 namelist -> namelist ',' NAME : '$1' ++ ['$3'] .
@@ -164,14 +294,14 @@ namelist -> namelist ',' NAME : '$1' ++ ['$3'] .
 explist -> exp : ['$1'] .
 explist -> explist ',' exp : '$1' ++ ['$3'] .
 
-exp -> 'nil'         : icall(line('$1'), column('$1'), 'nil', []) .
-exp -> 'false'       : icall(line('$1'), column('$1'), 'false', []) .
-exp -> 'true'        : icall(line('$1'), column('$1'), 'true', []) .
+exp -> 'nil'         : {'nil', line('$1'), column('$1'), []} .
+exp -> 'false'       : {'false', line('$1'), column('$1'), []} .
+exp -> 'true'        : {'true', line('$1'), column('$1'), []} .
 exp -> NUMERAL       :
-    icall(line('$1'), column('$1'), numeral, [erl_syntax:abstract(element(4,'$1'))]) .
+    {numeral, line('$1'), column('$1'), [element(4, '$1')]} .
 exp -> LITERALSTRING :
-    icall(line('$1'), column('$1'), literalstring, [erl_syntax:string(element(4,'$1'))]) .
-exp -> '...'         : icall(line('$1'), column('$1'), vararg, []) .
+    {literalstring, line('$1'), column('$1'), [element(4, '$1')]} .
+exp -> '...'         : {vararg, line('$1'), column('$1'), []} .
 exp -> functiondef   : '$1' .
 exp -> prefixexp     : '$1' .
 exp -> tableconstructor : '$1' .
@@ -180,14 +310,14 @@ exp -> unop          : '$1' .
 
 prefixexp -> var : '$1' .
 prefixexp -> functioncall : '$1' .
-prefixexp -> '(' exp ')' : icall(line('$1'), column('$1'), single, ['$2']) .
+prefixexp -> '(' exp ')' : {single, line('$1'), column('$1'), ['$2']} .
 
 functioncall -> prefixexp args :
-    dot_to_icall(dot_append(line('$1'), column('$1'), '$1',
-        icall(line('$1'), column('$1'), functioncall, ['$2']))) .
+    dot_to_tree(dot_append(line('$1'), column('$1'), '$1',
+        {functioncall, line('$1'), column('$1'), ['$2']})) .
 functioncall -> prefixexp ':' NAME args :
-    dot_to_icall(dot_append(line('$2'), column('$2'), '$1',
-        icall(line('$2'), column('$2'), methodcall, ['$3', '$4']))) .
+    dot_to_tree(dot_append(line('$2'), column('$2'), '$1',
+        {methodcall, line('$2'), column('$2'), ['$3', '$4']})) .
 
 args -> '(' ')' : [] .
 args -> '(' explist ')' : '$2' .
@@ -205,15 +335,13 @@ parlist -> namelist : '$1' .
 parlist -> namelist ',' '...' : '$1' ++ ['$3'] .
 parlist -> '...' : ['$1'] .
 
-%% Table constructor {...}: semantic rules (grammar + icall shape) are in place.
-%% Runtime: table(Module, []) or table(Module, [FieldList]) must be implemented
-%% (e.g. primitive or in exp): evaluate field list (key_field, name_field,
-%% exp_field) and build a Lua table value. Implement when adding table
-%% semantics.
+%% Table constructor {...}: semantic rules and tuple shape are in place.
+%% Runtime: `tableconstructor(Module, nil | FieldList)`.
+%%   Field tuples use key_field, name_field, exp_field. Implement in exp.
 tableconstructor -> '{' '}' :
-    icall(line('$1'), column('$1'), table, [erl_syntax:nil()]) .
+    {table, line('$1'), column('$1'), [nil]} .
 tableconstructor -> '{' fieldlist '}' :
-    icall(line('$1'), column('$1'), table, ['$2']) .
+    {table, line('$1'), column('$1'), ['$2']} .
 
 %% TODO array and map constructors
 
@@ -224,12 +352,12 @@ fields -> field : ['$1'] .
 fields -> fields fieldsep field : '$1' ++ ['$3'] .
 
 field -> '[' exp ']' '=' exp :
-    icall(line('$1'), column('$1'), key_field, ['$2', '$5']) .
+    {key_field, line('$1'), column('$1'), ['$2', '$5']} .
 field -> NAME '=' exp :
-    icall(line('$1'), column('$1'), name_field, ['$1', '$3']) .
+    {name_field, line('$1'), column('$1'), ['$1', '$3']} .
 %% TODO array elements
 field -> exp :
-    icall(line('$1'), column('$1'), exp_field, ['$1']) .
+    {exp_field, line('$1'), column('$1'), ['$1']} .
 
 fieldsep -> ',' .
 fieldsep -> ';' .
@@ -239,110 +367,97 @@ fieldsep -> ';' .
 %% We have to write them these way for the priorities to work.
 
 binop -> exp '+'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '-'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '*'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '/'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '//' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '%'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '^'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '&'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '|'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '~'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '>>' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '<<' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '==' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '~=' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '<=' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '>=' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '<'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '>'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp '..' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp 'and' exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 binop -> exp 'or'  exp :
-    icall(line('$2'), column('$2'), op, [erl_syntax:atom(cat('$2')), '$1', '$3']).
+    {op, line('$2'), column('$2'), [cat('$2'), '$1', '$3']}.
 
 unop -> 'not' exp :
-    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
+    {op, line('$1'), column('$1'), [cat('$1'), '$2']} .
 unop -> '#'   exp :
-    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
+    {op, line('$1'), column('$1'), [cat('$1'), '$2']} .
 unop -> '~'   exp :
-    icall(line('$1'), column('$1'), op, [erl_syntax:atom(cat('$1')), '$2']) .
+    {op, line('$1'), column('$1'), [cat('$1'), '$2']} .
 unop -> uminus : '$1' .
 
 uminus -> '-' exp :
-    icall(line('$1'), column('$1'), op, [erl_syntax:atom('-'), '$2']) .
+    {op, line('$1'), column('$1'), ['-', '$2']} .
 
 Erlang code.
 
 -include_lib("eunit/include/eunit.hrl").
--include_lib("syntax_tools/include/erl_syntax.hrl").
 
-%% Grammar (above) and AST construction (below) in one module; compact.
+%% Grammar (above) and tree construction (below) in one module; compact.
 %% This module only: functions follow two-line style (head -> ; body on next).
-%% We use only erl_syntax here for AST construction; convenient and uniform.
-%% Primitives moved to interpreter.erl; called via LFH (local calls).
-%% Cell access (exec/3,4) emitted as Module:exec(...) via access helper.
+%% Primitives: interpreter.erl. Grammar actions build neutral Lua tuples.
 
--export([process/1, process/2, inject/2]).
+-export([process/1]).
 
 process_test() ->
     ok.
 
-%% -----------------------------------------------------------------------------
-%% Module in the final tree (implementation record)
-%% -----------------------------------------------------------------------------
-%% Module is required. Parser emits variable('Module'). process/2 uses Merl
-%% (inject/2) post-parse to replace it with atom(Module). No process dictionary.
-%% Evaluation: erl_eval + LFH (route/2) dispatches local calls to
-%% primitives. EFH (guard/2) gates Module:exec/eval (security).
-%% -----------------------------------------------------------------------------
+%% Returns parsed AST body. Parse errors return {error, {Line, Column, Desc}};
+%% success {ok, Body}.
+%% (Ours; R.Virding Luerl has chunk/1 instead.)
+-type parse_reply() ::
+    {ok, term()} | {error, {integer(), integer(), string()}}.
 
-%% Returns parsed AST body. Parse errors raise; caller handles.
-%% (Ours; R.Virding Luerl has chunk/1 instead.) Use process/2 for run pipeline.
+-spec process([term()]) -> parse_reply().
 process(Tokens) ->
     case parse(Tokens) of
-        {error, {Line, _Mod, Desc}} ->
-            error({parse_error, Line, format_error(Desc)});
-        {ok, Body} -> Body
+        {ok, Body} -> {ok, Body};
+        {error, {{Line, Column}, _Mod, Desc}} ->
+            {error, {Line, Column, format_error(Desc)}}
     end.
 
-%% Like process/1; injects Module into tree via Merl (variable -> atom).
-process(Tokens, Module) ->
-    Body = process(Tokens),
-    inject(Body, Module).
+%% -----------------------------------------------------------------------------
+%% Exact terms returned under Descriptor:
+%%
+%% Origin          | Type     | Example / Format
+%% ----------------|----------|-------------------------------------------------
+%% Yecc engine     | string   | "syntax error before: 'end'"
+%% Rule (For loop) | string   | "illegal for"
+%% Rule (Calls)    | string   | "illegal call"
+%% -----------------------------------------------------------------------------
 
-%% Merl-based: replace variable('Module') with atom(Module). Module required.
-inject(Body, Module) when is_list(Body) ->
-    T = merl:template(Body),
-    merl:tree(merl:subst(T, [{'Module', merl:term(Module)}]));
-inject(Tree, Module) ->
-    T = merl:template(Tree),
-    merl:tree(merl:subst(T, [{'Module', merl:term(Module)}])).
-
-%% Primitives (assert, assign, etc.) and semantic stubs (chunk, block,
-%% stats, etc.) moved to interpreter.erl; called via LFH (handler/0).
-%% Cell access: access helper emits Module:exec(...) (qualified; EFH gates).
-%% Grammar helpers below are parser-internal.
+%% Primitives: interpreter.erl. Grammar helpers below are parser-internal.
 
 cat(T) ->  %% R.Virding.
     element(1, T).
@@ -356,98 +471,66 @@ column(T) ->  %% Ours (Column); Luerl has line only.
 %% numeric_for(Line, Column, LoopVar, [Init,Test,Upd], Block). R.Virding.
 
 numeric_for(Line, Column, Var, [Init,Limit], Block) ->
-    icall(Line, Column, for, [Var, Init, Limit, Block]);
+    {for, Line, Column, [Var, Init, Limit, Block]};
 numeric_for(Line, Column, Var, [Init,Limit,Step], Block) ->
-    icall(Line, Column, for, [Var, Init, Limit, Step, Block]);
-numeric_for(Line, _Column, _, _, _) ->
-    return_error(Line, "illegal for").
+    {for, Line, Column, [Var, Init, Limit, Step, Block]};
+numeric_for(Line, Column, Var, Exps, Block) when is_list(Exps) ->
+    _ = {Column, Var, Block},
+    return_error({Line, Column}, "illegal for").
 
 %% generic_for(Line, Column, Names, ExpList, Block). R.Virding.
 
 generic_for(Line, Column, Names, Exps, Block) ->
-    icall(Line, Column, for, [Names, Exps, Block]).
+    {for, Line, Column, [Names, Exps, Block]}.
 
 %% functiondef(Line, Column, Name, {Parameters,Body}). R.Virding.
 %% functiondef(Line, Column, {Parameters,Body}).
 
 functiondef(Line, Column, Name, {Pars,Body}) ->
-    icall(Line, Column, functiondef, [Name, Pars, Body]).
+    {functiondef, Line, Column, [Name, Pars, Body]}.
 
 functiondef(Line, Column, {Pars,Body}) ->
-    icall(Line, Column, functiondef, [Pars, Body]).
+    {functiondef, Line, Column, [Pars, Body]}.
 
 %% dot_append(Line, Column, DotList, Last) -> DotList. R.Virding.
 %%  Append Last to the end of a dotlist. Builds {'.', ...} internally;
-%%  grammar rules that expose the chain as output wrap with dot_to_icall/1.
-%%  dot_to_icall: ours (dot chain -> icall); R.Virding Luerl has no equivalent.
+%%  grammar rules that expose the chain as output wrap with dot_to_tree/1.
+%%  dot_to_tree: ours (dot chain -> tree); R.Virding Luerl has no equivalent.
 
 dot_append(Line, Column, {'.', L, C, H, T}, Last) ->
     {'.', L, C, H, dot_append(Line, Column, T, Last)};
 dot_append(Line, Column, H, Last) ->
     {'.', Line, Column, H, Last}.
 
-dot_to_icall({'.', L, C, H, T}) ->
-    icall(L, C, '.', [dot_to_icall(H), dot_to_icall(T)]);
-dot_to_icall(Other) ->
+dot_to_tree({'.', L, C, H, T}) ->
+    {'.', L, C, [dot_to_tree(H), dot_to_tree(T)]};
+dot_to_tree(Other) ->
     Other.
 
 %% check_functioncall(PrefixExp) -> PrefixExp. R.Virding.
 %%  Check that the PrefixExp is a proper function call/method.
 
-check_functioncall(Node) ->
-    case tag(Node) of  %% tag: was icall_tag.
-        functioncall -> Node;
-        methodcall   -> Node;
-        _ ->
-            case Node of
-                {'.', L, C, H, T} ->
-                    dot_to_icall({'.', L, C, H, check_functioncall(T)});
-                _ -> return_error(line(Node), "illegal call")
-            end
-    end.
+check_functioncall({functioncall, _L, _C, _Args} = Call) ->
+    Call;
+check_functioncall({methodcall, _L, _C, _Args} = Call) ->
+    Call;
+check_functioncall({'.', L, C, [H, T0]}) ->
+    T = check_functioncall(T0),
+    {'.', L, C, [H, T]};
+check_functioncall({'.', L, C, H, T}) ->
+    dot_to_tree({'.', L, C, H, check_functioncall(T)});
+check_functioncall({_Type, L, C}) ->
+    return_error({L, C}, "illegal call");
+check_functioncall({_Type, L, C, _Value}) ->
+    return_error({L, C}, "illegal call").
 
-%% tag(Node) -> atom() | undefined. Was icall_tag.
-%%  Extracts the interpreter function name from an icall erl_syntax node.
-
-tag(Node) ->
-    try erl_syntax:atom_value(
-            erl_syntax:module_qualifier_argument(
-                erl_syntax:application_operator(Node)))
-    catch _:_ -> undefined end.
-
-%% condition, icall: ours (icall-based AST); no direct R.Virding equivalent.
+%% condition: ours; no direct R.Virding equivalent.
 condition('if', Line, Column, If, IfBody, _ElseIf = [], ElseBody) ->
-    icall(Line, Column, 'if', [If, IfBody, ElseBody]);
+    {'if', Line, Column, [If, IfBody, ElseBody]};
 condition('if', Line, Column, If, IfBody, ElseIf, ElseBody) ->
-    icall(Line, Column, 'if', [If, IfBody, ElseIf, ElseBody]).
+    {'if', Line, Column, [If, IfBody, ElseIf, ElseBody]}.
 
 condition('elseif', Line, Column, If, IfBody, []) ->
-    icall(Line, Column, elseif, [If, IfBody]);
+    {elseif, Line, Column, [If, IfBody]};
 condition('elseif', Line, Column, If, IfBody, ElseIf) ->
-    icall(Line, Column, elseif, [If, IfBody, ElseIf]).
-
-%% icall(Line, Column, Fun, Args) -> erl_syntax node for
-%%   Fun(Module, Args...).
-%% Local call; LFH (interpreter:handler/0) dispatches at eval time.
-%% First arg is always variable('Module'); Merl injects atom(Module).
-
-icall(Line, Column, Fun, Args) when is_list(Args) ->
-    Node = erl_syntax:application(
-        erl_syntax:atom(Fun),
-        [erl_syntax:variable('Module') | Args]),
-    erl_syntax:set_pos(Node, {Line, Column});
-icall(Line, Column, Fun, Arg) ->
-    icall(Line, Column, Fun, [Arg]).
-
-%% access(Line, Column, Args) -> erl_syntax node for
-%%   Module:exec(Args...).
-%% Qualified call to callback module; cell read/write. EFH (guard/2)
-%% gates for security; only exec and eval allowed.
-
-access(Line, Column, Args) when is_list(Args) ->
-    Node = erl_syntax:application(
-        erl_syntax:module_qualifier(
-            erl_syntax:variable('Module'),
-            erl_syntax:atom(exec)),
-        Args),
-    erl_syntax:set_pos(Node, {Line, Column}).
+    {elseif, Line, Column, [If, IfBody, ElseIf]}.
