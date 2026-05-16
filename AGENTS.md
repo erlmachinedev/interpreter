@@ -1,5 +1,23 @@
 # Repository Guidelines
 
+## AI agent behavior
+- Do not edit repository files, run write tools, or apply patches until the
+  user explicitly approves that change (e.g. implement, apply, or change named
+  files).
+- Do not run `make`, `erlc`, `rebar`, `eunit`, or other build/test/shell
+  tooling unless the user explicitly asks to run that command in the session.
+- Parser output: treat `interpreter_parse.erl` as **generated** from
+  `interpreter_parse.yrl` — do **not** hand-edit the `.erl` (and never
+  bulk-replace inside the yecc automaton). Change the **`.yrl` only**; a human
+  or `make` regenerates the `.erl` when the user allows builds.
+- Do not run destructive Git commands (`git restore`, `reset`, `checkout`,
+  `clean`, and similar) without explicit approval for that command.
+- Treat questions and design discussion as answer-only unless the user asks
+  for code or repository edits.
+- If the user asks to revert agent changes, undo those edits in the working
+  tree (e.g. patch), not reset to last commit, unless they explicitly ask for
+  Git.
+
 ## Project Structure & Module Organization
 - `src/`: Erlang implementation of the Lua interpreter; includes the lexer/parser sources (`interpreter_scan.xrl`, `interpreter_parse.yrl`) and compiled modules such as `interpreter.erl`.
 - `priv/`: Embedded Lua fixtures (e.g., `code.lua`) used during compilation/testing.
@@ -12,7 +30,8 @@
 - `make clean` / `make distclean`: Remove compiled artifacts / dependencies before a fresh build.
 - `make eunit`: Run the EUnit suite; preferred quick-test command.
 - `make shell`: Start an Erlang shell with the project code on the path for interactive debugging.
-- When editing lexer/parser definitions, re-run `make` to regenerate scanner/parser modules.
+- When editing lexer/parser definitions, re-run `make` to regenerate
+  scanner/parser modules (human / CI; not an agent default).
 
 ## Coding Style & Naming Conventions
 - Keep lines within 80 columns (80 symbols; canonical line limit). All project
