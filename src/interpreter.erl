@@ -339,23 +339,27 @@
 
 -type column() :: offset().
 
+%% TODO: opaque until host identity contract is settled; refine to a concrete
+%% type once the callback module convention is decided.
 -type name() :: erl().
 
 -type cell() :: non_neg_integer().
 
+%% TODO: function() covers any Erlang fun; narrow to a dedicated Lua closure
+%% type once closure lowering defines the representation. map() represents a
+%% Lua table used as a key via reference identity; may need its own type alias.
 -type key() :: boolean() | function() | binary() | number() | map().
 
--type lua() :: key() | nil().
+-type lua() :: key() | 'nil'.
 
 -type erl() :: any().
 
 -type command() :: fun(() -> erl()).
 
--type program() :: fun(([lua()]) -> lua()).
+-type program() :: fun(([lua()]) -> [lua()]).
 
+%% TODO: placeholder; refine when iterator/1 and next/1 are implemented.
 -type iterator() :: erl().
-
--type runtime() :: erl().
 
 %% API
 
@@ -2119,10 +2123,38 @@ exp(_Module, _Node) ->
 %% already in the committed record. This makes interrupted-execution recovery
 %% safe — resuming at a cursor cannot re-apply effects that already completed.
 %%
-%% Note: BEAM fun identity (module name / internal index) identifies Erlang
-%% closure sites, not Lua source positions. The interpreter-level identity is
-%% the {Line, Column} kept by the host alongside the command() reference. The
-%% fun itself is opaque to the host; its BEAM structure is never inspected.
+%% Compilation per cluster member and recovery on leader loss
+%% ----------------------------------------------------------
+%% Each Ra state machine member compiles the Lua source independently.
+%% The natural place is the apply/3 callback: when a {run, RunId, Source}
+%% command is applied, every member compiles Source and stores the resulting
+%% program in state. Every member is then ready to become leader without a
+%% separate compilation step on election. Compilation is deterministic — the
+%% same source produces structurally identical continuation chains — so the
+%% program shape is consistent across the cluster even though each member
+%% holds distinct Fun heap objects.
+%%
+%% On leader loss the new leader already holds a compiled program. The
+%% challenge is locating the resume point given that Fun references differ
+%% per node:
+%%
+%%   Re-execute with idempotent exec/4
+%%     The new leader re-runs the program from the beginning. exec/4 is
+%%     implemented to be idempotent: if the Ra log already contains a
+%%     committed write for a given statement, the host returns without
+%%     applying the effect again. Read-only exec/3 calls are always safe
+%%     to re-execute. This approach requires no resume-point mechanism;
+%%     the idempotency check in exec/4 is sufficient.
+%%
+%%   Statement ordinal in Ra log
+%%     Each apply/3 records the ordinal of the last completed statement.
+%%     The new leader counts N steps into its own compiled chain to reach
+%%     the resume Fun. Works for linear programs; requires additional design
+%%     for branching control flow.
+%%
+%% Both ideas share the same constraint: the Ra log must not store Fun
+%% references. Funs are session-local; only serializable values (ordinals,
+%% RunId, committed write markers) belong in the log.
 %%
 %% -----------------------------------------------------------------------------
 %% Gemini Architectural Analysis & Detailed Library Classification
