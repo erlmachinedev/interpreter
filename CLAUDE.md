@@ -18,6 +18,7 @@ host-owned side-effects (reads, writes, state transitions).
 - Questions and design discussion → answer only; no code unless asked.
 - If asked to revert agent changes, undo edits in the working tree, not
   `git reset`, unless Git is explicitly requested.
+- `deps/`, `ebin/` — managed by `erlang.mk`; do not edit manually.
 
 ## Architecture
 
@@ -46,24 +47,8 @@ Two approaches under consideration (neither fully implemented):
   compiled chain to find the resume Fun. Requires additional design for
   branching control flow.
 
-### Pending stubs
-- `process/2` — lexical scope resolution pass; currently returns identity.
-- `eval/4` — statement evaluator; currently `throw(not_implemented)`.
-- `iterator/1`, `next/1` — iterator protocol; `throw(not_implemented)`.
-
-## Project Layout
-- `src/` — Erlang sources; `interpreter.erl` is the main module;
-  `interpreter_scan.xrl` and `interpreter_parse.yrl` are the lexer/parser.
-- `priv/` — Lua fixtures (e.g. `code.lua`) used during testing.
-- `test/` — EUnit suites (`interpreter_tests.erl`); `.beam` artifacts after
-  test runs.
-- `deps/`, `ebin/` — managed by `erlang.mk`; do not edit manually.
-
 ## Build & Test
-- `make` — fetch deps and compile.
-- `make clean` / `make distclean` — remove artifacts / deps.
 - `make eunit` — preferred quick-test command.
-- `make shell` — Erlang shell with project modules on path.
 - After editing `.xrl`/`.yrl`, re-run `make` to regenerate scanner/parser
   (human or CI action, not an agent default).
 
@@ -80,18 +65,12 @@ Two approaches under consideration (neither fully implemented):
 ### Naming scope (single-word rule)
 - **Do not change:** OTP conventions (`process_test`); Robert Virding names
   in `interpreter_parse.yrl` (`numeric_for`, `generic_for`, `functiondef`,
-  `check_functioncall`, `dot_append`, `dot_to_icall`, …); Leex conventions
+  `check_functioncall`, `dot_append`, `dot_to_tree`, …); Leex conventions
   in `interpreter_scan.xrl` (`TokenLine`, `TokenCol`, …).
 - **In scope:** names we introduced. Prefer one word per function/variable;
   no camelCase or compound snake_case. `IfBody`, `ElseBody`, `ElseIf` kept.
-- Applied renames: `build_module`→`build`, `ModAttr`→`mod`,
-  `icall_tag`→`tag`.
 
 ## Testing
-- EUnit with `meck` (`meck:new/2`, `meck:expect/3`); suffix test functions
-  with `_test`.
-- New suites go in `test/<module>_tests.erl` with
-  `-include_lib("eunit/include/eunit.hrl").`
 - Use `?assertEqual`, `?assertError`, `?debugVal`; avoid inter-test state
   leakage.
 - Run `make eunit` before submitting; add Lua fixtures to `priv/` when
