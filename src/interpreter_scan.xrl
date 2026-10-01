@@ -15,6 +15,16 @@
 %% File    : interpreter_scan.xrl
 %% Author  : Robert Virding
 %% Purpose : Token definitions for LUA.
+%%
+%% Based on Robert Virding's file `src/luerl_scan.xrl`,
+%% https://github.com/rvirding/luerl.
+%%
+%% Changes in comparison to the initial Luerl source:
+%%   - Every token carries `Column` next to `Line`; every helper takes it.
+%%   - Entry `process/1` runs `string(Code, {1, 1})` and normalises errors
+%%     to `{error, {Line, Column, String}}` through `format_error/1`.
+%%   - No catch-all `.` rule; Leex's `{illegal, Char}` is reformatted in
+%%     `format_error/1`.
 
 Definitions.
 
@@ -22,6 +32,7 @@ D = [0-9]
 H = [0-9A-Fa-f]
 U = [A-Z]
 L = [a-z]
+NAME = ({U}|{L}|_|{D})
 
 Rules.
 
@@ -29,45 +40,17 @@ Rules.
 %% TokenCol from leex).
 ({U}|{L}|_)({U}|{L}|_|{D})* :
 	name_token(TokenChars, TokenLine, TokenCol).
-%% Numbers.
-{D}+ : 
-	case catch {ok,list_to_integer(TokenChars)} of
-	    {ok,I} -> {token,{'NUMERAL',TokenLine,TokenCol,I}};
-	    _ -> {error,"illegal number"}
-	end.
-0[xX]{H}+ :
-        Int = list_to_integer(string:substr(TokenChars, 3), 16),
-        {token,{'NUMERAL',TokenLine,TokenCol,Int}}.
+%% Hexadecimal numbers, we have separate rule to ensure we don't have
+%% just a '.'. NOTE THESE MUST COME FIRST TO CATCH 0[xX]!!!!
+0[xX]{H}*\.?{H}*([pP][-+]?{D}*)?{NAME}* :
+	hex_number_token(TokenChars, TokenLine, TokenCol).
 
-%% Floats, we have separate rules to make them easier to handle.
-{D}+\.{D}+([eE][-+]?{D}+)? :
-	case catch {ok,list_to_float(TokenChars)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
-	    _ -> {error,"illegal number"}
-	end.
-{D}+[eE][-+]?{D}+ :
-	[M,E] = string:tokens(TokenChars, "eE"),
-	case catch {ok,list_to_float(M ++ ".0e" ++ E)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
-	    _ -> {error,"illegal number"}
-	end.
-{D}+\.([eE][-+]?{D}+)? :
-	[M|E] = string:tokens(TokenChars, "."),
-	case catch {ok,list_to_float(lists:append([M,".0"|E]))} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
-	    _ -> {error,"illegal number"}
-	end.
-\.{D}+([eE][-+]?{D}+)? :
-	case catch {ok,list_to_float("0" ++ TokenChars)} of
-	    {ok,F} -> {token,{'NUMERAL',TokenLine,TokenCol,F}};
-	    _ -> {error,"illegal number"}
-	end.
-
-%% Hexadecimal floats, we have one complex rule to handle bad formats
-%% more like the Lua parser.
-
-0[xX]{H}*\.?{H}*([pP][+-]?{D}+)? :
-	hex_float_token(TokenChars, TokenLine, TokenCol).
+%% Decimal numbers, we separate rules to ensure we don't have just a '.'.
+%% Both integers and floats are handled here.
+\.{D}+([eE][-+]?{D}+)?{NAME}* :
+	decimal_number_token(TokenChars, TokenLine, TokenCol).
+{D}+\.?{D}*([eE][-+]?{D}+)?{NAME}* :
+	decimal_number_token(TokenChars, TokenLine, TokenCol).
 
 %% Strings. 
 %% Handle the illegal newlines in string_token.
@@ -135,6 +118,12 @@ Rules.
 --\[\[([^]]|\][^]])* : {error,"unfinished long comment"}.
 
 Erlang code.
+
+-define(DIGIT(C), (C >= $0 andalso C =< $9)).
+-define(HEX(C), (C >= $A andalso C =< $F orelse
+                 C >= $a andalso C =< $f orelse
+                 ?DIGIT(C))).
+
 %% Leex predefined variables in rules: TokenChars, TokenLen, TokenLine,
 %% TokenCol.
 %% We pass Line and Column as separate parameters (TokenLine, TokenCol)
@@ -147,8 +136,8 @@ Erlang code.
 
 process_test() -> ok.
 
-%% string/1 (leex-generated) returns {ok, Tokens, EndLine} | {error, ...}.
--spec process(string()) ->
+%% string/2 (leex-generated) returns {ok, Tokens, EndLoc} | {error, ...}.
+-spec process([byte()]) ->
     {ok, [term()]} | {error, {integer(), integer(), string()}}.
 process(Code) ->
     case string(Code, {1, 1}) of
@@ -164,8 +153,7 @@ process(Code) ->
 %% Origin          | Engine Descriptor    | Normalized Descriptor (string)
 %% ----------------|----------------------|-------------------------------------
 %% Leex engine     | {illegal, Character} | "unexpected characters \"...\""
-%% Rule (Numbers)  | "illegal number"     | "illegal number"
-%% Rule (Floats)   | "malformed number"   | "malformed number"
+%% Rule (Numbers)  | "malformed number…"  | "malformed number near '...'"
 %% Rule (Strings)  | "illegal string"     | "illegal string"
 %% Rule (Names)    | "illegal name"       | "illegal name"
 %% Rule (Comments) | "unfinished ..."     | "unfinished long comment"
@@ -196,55 +184,131 @@ name_token(Cs, Line, Column) ->
 name_string(Name) ->
     binary_to_atom(Name, latin1).		%Only latin1 in Lua
 
-%% hex_float_token(TokenChars, Line, Column) -> {token,{...}} | {error,E}.
+%% decimal_number_token(TokenChars, Line, Column) -> {token,{...}} | {error,E}.
+%% hex_number_token(TokenChars, Line, Column) -> {token,{...}} | {error,E}.
+%%  Line, Column as separate parameters.
 
-hex_float_token(TokenChars, Line, Column) ->
-    Tcs = string:substr(TokenChars, 3),
-    case lists:splitwith(fun (C) -> (C =/= $p) and (C =/= $P) end, Tcs) of
-	{Mcs,[]} when Mcs /= [] ->
-	    hex_float(Mcs, [], Line, Column);
-	{Mcs,[_P|Ecs]} when Ecs /= [] ->
-	    hex_float(Mcs, Ecs, Line, Column);
-	_Other -> {error,"malformed number"}
+decimal_number_token(TokenChars, Line, Column) ->
+    Result = case dec_number_split(TokenChars) of
+                 {_,_,_,Rest} when Rest =/= [] -> error;
+                 {[],[],[],_Rest} -> error;
+                 {[],[],_Ecs,_Rest} -> error;
+                 {[],".",_Ecs,_Rest} -> error;
+                 {_,_,[_E],_Rest} -> error;
+                 {Hcs,Fcs,Ecs,_Rest} ->
+                     DW = list_to_integer("0" ++ Hcs),
+                     DF = dec_number_fraction(Fcs, DW),
+                     Dnum = dec_number_exponent(Ecs, DF),
+                     {ok,Dnum}
+             end,
+    case Result of
+        {ok,Number} ->
+            {token,{'NUMERAL',Line,Column,Number}};
+        error ->
+            number_token_error(TokenChars)
     end.
 
-%% hex_float(Mantissa, Exponent) -> {token,{'NUMERAL',Line,Float}} | {error,E}.
-%% hex_mantissa(Chars) -> {float,Float} | error.
-%% hex_fraction(Chars, Pow, SoFar) -> Fraction.
+number_token_error(Tcs) ->
+    {error,"malformed number near '" ++ Tcs ++ "'"}.
 
-hex_float(Mcs, [], Line, Column) ->
-    case hex_mantissa(Mcs) of
-	{float,M} -> {token,{'NUMERAL',Line,Column,M}};
-	error -> {error,"malformed number"}
+dec_number_split(Tcs0) ->
+    Digit = fun (C) -> ?DIGIT(C) end,
+    {Hcs,Tcs1} = lists:splitwith(Digit, Tcs0),
+    {Fcs,Tcs2} = dec_number_split_fraction(Tcs1),
+    {Ecs,Rest} = dec_number_split_exponent(Tcs2),
+    {Hcs,Fcs,Ecs,Rest}.
+
+dec_number_split_fraction([$. | Fcs0]) ->
+    {Fcs1,Frest} = lists:splitwith(fun (C) -> ?DIGIT(C) end, Fcs0),
+    {[$.|Fcs1],Frest};
+dec_number_split_fraction(Tcs) ->
+    {[],Tcs}.
+
+dec_number_split_exponent([P | Pcs0]) when P =:= $e ; P =:= $E ->
+    Digit = fun (C) -> ?DIGIT(C) end,
+    case Pcs0 of
+        [S | Pcs1] when S =:= $+ ; S =:= $- ->
+            {Pcs2,Rest} = lists:splitwith(Digit, Pcs1),
+            {[P,S|Pcs2],Rest};
+        Pcs1 ->
+            {Pcs2,Rest} = lists:splitwith(Digit, Pcs1),
+            {[P|Pcs2],Rest}
     end;
-hex_float(Mcs, Ecs, Line, Column) ->
-    case hex_mantissa(Mcs) of
-	{float,M} ->
-	    case catch list_to_integer(Ecs, 10) of
-		{'EXIT',_} -> {error,"malformed number"};
-		E -> {token,{'NUMERAL',Line,Column,M * math:pow(2, E)}}
-	    end;
-	error -> {error,"malformed number"}
+dec_number_split_exponent(Tcs) ->
+    {[],Tcs}.
+
+dec_number_fraction(".", DW) -> float(DW);
+dec_number_fraction([$. | Fcs], DW) ->
+    DW + list_to_float("0." ++ Fcs);
+dec_number_fraction([], DW) -> DW.
+
+dec_number_exponent([_E | Ecs], DF) ->
+    DF * math:pow(10, list_to_integer(Ecs));
+dec_number_exponent([], DF) -> DF.
+
+hex_number_token([$0,X|TokenChars], Line, Column) ->
+    Result = case hex_number_split(TokenChars) of
+                 {_,_,_,Rest} when Rest =/= [] -> error;
+                 {[],[],[],_Rest} -> error;
+                 {[],[],_Ecs,_Rest} -> error;
+                 {[],".",_Ecs,_Rest} -> error;
+                 {_,_,[_P],_Rest} -> error;
+                 {Hcs,Fcs,Ecs,_Rest} ->
+                     HW = list_to_integer("0" ++ Hcs, 16),
+                     HF = hex_number_fraction(Fcs, HW),
+                     Hnum = hex_number_exponent(Ecs, HF),
+                     {ok,Hnum}
+             end,
+    case Result of
+        {ok,Number} ->
+            {token,{'NUMERAL',Line,Column,Number}};
+        error ->
+            number_token_error([$0,X|TokenChars])
     end.
 
-hex_mantissa(Mcs) ->
-    case lists:splitwith(fun (C) -> C =/= $. end, Mcs) of
-	{[],[]} -> error;			%Nothing at all
-	{[],[$.]} -> error;			%Only a '.'
-	{[],[$.|Fcs]} -> {float,hex_fraction(Fcs, 16.0, 0.0)};
-	{Hcs,[]} -> {float,float(list_to_integer(Hcs, 16))};
-	{Hcs,[$.|Fcs]} ->
-	    H = float(list_to_integer(Hcs, 16)),
-	    {float,hex_fraction(Fcs, 16.0, H)}
-    end.
+hex_number_split(Tcs0) ->
+    Hex = fun (C) -> ?HEX(C) end,
+    {Hcs,Tcs1} = lists:splitwith(Hex, Tcs0),
+    {Fcs,Tcs2} = hex_number_split_fraction(Tcs1),
+    {Ecs,Rest} = hex_number_split_exponent(Tcs2),
+    {Hcs,Fcs,Ecs,Rest}.
 
-hex_fraction([C|Cs], Pow, SoFar) when C >= $0, C =< $9 ->
-    hex_fraction(Cs, Pow*16, SoFar + (C - $0)/Pow);
-hex_fraction([C|Cs], Pow, SoFar) when C >= $a, C =< $f ->
-    hex_fraction(Cs, Pow*16, SoFar + (C - $a + 10)/Pow);
-hex_fraction([C|Cs], Pow, SoFar) when C >= $A, C =< $F ->
-    hex_fraction(Cs, Pow*16, SoFar + (C - $A + 10)/Pow);
-hex_fraction([], _Pow, SoFar) -> SoFar.
+hex_number_split_fraction([$. | Fcs0]) ->
+    {Fcs1,Frest} = lists:splitwith(fun (C) -> ?HEX(C) end, Fcs0),
+    {[$.|Fcs1],Frest};
+hex_number_split_fraction(Tcs) ->
+    {[],Tcs}.
+
+hex_number_split_exponent([P | Pcs0]) when P =:= $p ; P =:= $P ->
+    Digit = fun (C) -> ?DIGIT(C) end,
+    case Pcs0 of
+        [S | Pcs1] when S =:= $+ ; S =:= $- ->
+            {Pcs2,Rest} = lists:splitwith(Digit, Pcs1),
+            {[P,S|Pcs2],Rest};
+        Pcs1 ->
+            {Pcs2,Rest} = lists:splitwith(Digit, Pcs1),
+            {[P|Pcs2],Rest}
+    end;
+hex_number_split_exponent(Tcs) ->
+    {[],Tcs}.
+
+hex_number_fraction([$. | Fcs], HW) ->
+    {HF,_} = hex_number_fraction(Fcs, 16.0, HW + 0.0),
+    HF;
+hex_number_fraction([], HW) -> HW.
+
+hex_number_fraction([C|Cs], Pow, SoFar) when C >= $0, C =< $9 ->
+    hex_number_fraction(Cs, Pow*16.0, SoFar + (C - $0)/Pow);
+hex_number_fraction([C|Cs], Pow, SoFar) when C >= $a, C =< $f ->
+    hex_number_fraction(Cs, Pow*16.0, SoFar + (C - $a + 10)/Pow);
+hex_number_fraction([C|Cs], Pow, SoFar) when C >= $A, C =< $F ->
+    hex_number_fraction(Cs, Pow*16.0, SoFar + (C - $A + 10)/Pow);
+hex_number_fraction(Cs, _Pow, SoFar) ->
+    {SoFar,Cs}.
+
+hex_number_exponent([_P | Ecs], HF) ->
+    HF * math:pow(2, list_to_integer(Ecs));
+hex_number_exponent([], HF) -> HF.
 
 %% string_token(InputChars, Length, Line, Column) -> {token,{...}} | {error,E}.
 
@@ -252,7 +316,7 @@ string_token(Cs0, Len, Line, Column) ->
     Cs1 = string:substr(Cs0, 2, Len - 2),
     try
         Bytes = string_chars(Cs1),
-        String = unicode:characters_to_binary(Bytes, utf8, utf8),
+        String = iolist_to_binary(Bytes),
         {token,{'LITERALSTRING',Line,Column,String}}
     catch
         _:_ ->
@@ -289,7 +353,7 @@ long_string_token(Cs0, Len, BrLen, Line, Column) ->
 	      Cs1 -> Cs1
 	  end,
     try
-	String = unicode:characters_to_binary(Cs2, utf8, utf8),
+	String = iolist_to_binary(Cs2),
 	{token,{'LITERALSTRING',Line,Column,String}}
     catch
 	_:_ ->
