@@ -19,14 +19,13 @@
 %% Lua tree
 %% --------
 %% Semantic actions build neutral Lua tuples: `{Prim, Line, Column, Args}`.
-%% The parser does not embed a host module, Erlang abstract syntax, or
-%% evaluation workaround. Later compiler passes decide whether a tuple becomes
-%% a closure, a direct runtime primitive call, or a validation error.
+%% Later compiler passes decide whether a tuple becomes a closure, a direct
+%% runtime primitive call, or a validation error.
 %%
 %% API: `process/1` — scan tokens -> Lua tree only.
 %%
-%% Summary — this fork vs Virding’s `luerl_parse` (Luerl, rvirding/luerl)
-%% -----------------------------------------------------------------
+%% Summary — based on Robert Virding's `luerl_parse.yrl` (Luerl)
+%% -------------------------------------------------------------
 %% BNF matches the Lua 5.2 manual + Weimer `stat` fix; semantic actions
 %% differ (see Luerl `develop` for the reference tuple IR):
 %%   • IR: Luerl emits tagged tuples and token passthrough; here grammar
@@ -34,14 +33,34 @@
 %%   • Position: we thread `line/1` and `column/1`; dot chains use
 %%     `{'.', L, C, H, T}` and `dot_append/4` (Luerl’s `'.'` is line-only).
 %%   • Stats: Lua 5.2-style `function` / `local` on `stat`; we omit Luerl’s
-%%     `func_stat` / `local_stat` / `attnamelist` (5.3+ attribute locals).
-%%   • if: `condition/6` and Lua tuples for `if` / `elseif` / `else`, not
-%%     Luerl’s one `{'if', Line, [test/block pairs], else}` tuple.
+%%     `func_stat` / `local_stat`.
+%%   • if: `condition/7` (if) and `condition/6` (elseif), Lua tuples for
+%%     `if` / `elseif` / `else`, not Luerl’s one
+%%     `{‘if’, Line, [test/block pairs], else}` tuple.
 %%   • var: `NAME` -> `{var, Line, Column, [Name]}`, not raw `$1`.
 %%   • check_functioncall / tag: tuple tree and `'.'`; Luerl matches
 %%     tuple `{functioncall,…}` / `{'.',…}`.
 %%   • Entry: `process/1` here; Luerl `chunk/1` wraps the body (see their
 %%     Erlang block).
+%%
+%% Based on Robert Virding's file `src/luerl_parse.yrl`,
+%% https://github.com/rvirding/luerl.
+%%
+%% Changes in comparison to the initial Luerl source:
+%%   - Every tuple carries `Column` next to `Line`; `column/1` added and
+%%     every helper takes it.
+%%   - One uniform tree shape `{Prim, Line, Column, Args}` instead of
+%%     per-primitive arities.
+%%   - Expression leaves are built tuples (`var`, `numeral`,
+%%     `literalstring`, `nil`/`true`/`false`/`vararg`), not scanner tokens.
+%%   - `if` is a nested `condition/7,6` chain with `elseif`/`else`
+%%     markers, not a flat pair list.
+%%   - Dot chains pass through `dot_to_tree/1`; `check_functioncall/1`
+%%     matches both chain forms and has explicit token-shape error
+%%     clauses instead of an `Other` catch-all.
+%%   - `function` and `local` sit directly under `stat`.
+%%   - Entry `process/1` returns the body and
+%%     `{error, {Line, Column, String}}`; no `chunk/1` wrapper function.
 %%
 %% Detailed comparison with Luerl `luerl_parse.yrl`
 %% ------------------------------------------------
@@ -98,11 +117,8 @@
 %%
 %% Function and local statements:
 %%   - Luerl uses separate nonterminals `func_stat` and `local_stat`.
-%%     Its current grammar also includes `attnamelist`, `attname`, and
-%%     `attrib`, matching newer Lua local-attribute syntax.
 %%   - This parser keeps Lua 5.2-oriented statement rules directly under
 %%     `stat`: `function funcname funcbody` and `local local_decl`.
-%%     Local attributes are intentionally absent.
 %%
 %% If/elseif/else:
 %%   - Luerl lowers an if-chain to one tuple:
@@ -143,9 +159,8 @@
 %%       Luerl: primitive-specific arity, line only.
 %%       Here: `{Primitive, Line, Column, Args}`.
 %%
-%% This file should stay a parser. It must not rebuild the removed Erlang
-%% abstract-form path, host-module injection, or evaluation workaround. The
-%% next stage owns lexical resolution and closure construction.
+%% This file should stay a parser. The next stage owns lexical resolution
+%% and closure construction.
 
 %% The Grammar rules here are taken directly from the LUA 5.2
 %% manual. Unfortunately it is not an LALR(1) grammar but I have
@@ -269,7 +284,7 @@ funcname -> dottedname : '$1' .
 local_decl -> function NAME funcbody :
           functiondef(line('$1'),column('$1'),'$2','$3') .
 local_decl -> namelist :
-    {assign, line(hd('$1')), column(hd('$1')), ['$1', nil]} .
+    {assign, line(hd('$1')), column(hd('$1')), ['$1', []]} .
 local_decl -> namelist '=' explist :
     {assign, line('$2'), column('$2'), ['$1', '$3']} .
 
@@ -336,12 +351,13 @@ parlist -> namelist ',' '...' : '$1' ++ ['$3'] .
 parlist -> '...' : ['$1'] .
 
 %% Table constructor {...}: semantic rules and tuple shape are in place.
-%% Runtime: `tableconstructor(Module, nil | FieldList)`.
-%%   Field tuples use key_field, name_field, exp_field. Implement in exp.
+%% Runtime: `tableconstructor(Module, FieldList)`; `{}` is an empty
+%%   FieldList. Field tuples use key_field, name_field, exp_field.
+%%   Implement in exp.
 tableconstructor -> '{' '}' :
-    {table, line('$1'), column('$1'), [nil]} .
+    {table, line('$1'), column('$1'), []} .
 tableconstructor -> '{' fieldlist '}' :
-    {table, line('$1'), column('$1'), ['$2']} .
+    {table, line('$1'), column('$1'), '$2'} .
 
 %% TODO array and map constructors
 
