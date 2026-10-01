@@ -1,8 +1,5 @@
 -module(interpreter).
 
-%% TEST(devcontainer): edit this line + save to see workspace bind-mount
-%% sync (instant) vs. Rebuild Container (full image rebuild). Bump: 0
-
 %% Lua 5.2 interpreter embedded in ERTS
 %%
 %% This module serves three roles:
@@ -117,6 +114,84 @@
 %% =============================================================================
 %%
 %% =============================================================================
+%% READ — Closure compilation and continuations (design background)
+%% =============================================================================
+%%
+%% Closure generation (tree -> nested Funs; scope resolved before emission)
+%% -----------------------------------------------------------------------
+%%   1. Feeley, Lapalme. Using Closures for Code Generation.
+%%      Computer Languages 12(1), 1987.
+%%   2. Feeley, Lapalme. Closure Generation Based on Viewing LAMBDA as
+%%      EPSILON plus COMPILE. Computer Languages 17(4), 1992.
+%%   3. Abelson, Sussman. Structure and Interpretation of Computer Programs,
+%%      2nd ed., 1996. §4.1.7 Separating Syntactic Analysis from Execution;
+%%      §5.5.6 Lexical Addressing.
+%%   4. Queinnec. Lisp in Small Pieces, 1996. Ch. 6 Fast Interpretation.
+%%
+%% Continuation chains (statement N captures N+1; see conts below)
+%% ---------------------------------------------------------------
+%%   5. Reynolds. Definitional Interpreters for Higher-Order Programming
+%%      Languages. ACM National Conference, 1972.
+%%   6. Bell. Threaded Code. CACM 16(6), 1973.
+%%
+%% Serializable continuations (the Ra log must not hold Funs)
+%% ----------------------------------------------------------
+%%   7. Danvy, Nielsen. Defunctionalization at Work. PPDP 2001.
+%%   8. Ager, Biernacki, Danvy, Midtgaard. A Functional Correspondence
+%%      between Evaluators and Abstract Machines. PPDP 2003.
+%%
+%% Statements and expressions (two Fun contracts)
+%% ---------------------------------------------
+%%   9. Appel. Modern Compiler Implementation in ML, 1998. Ch. 7
+%%      Translation to Intermediate Code: Ex / Nx / Cx and unEx / unNx /
+%%      unCx.
+%%
+%% Lua is statement-oriented. The containment, top down:
+%%
+%%   - Chunk (§3.2): the whole source; Lua runs it as the body of an
+%%     anonymous vararg function. The parser returns the body, the next
+%%     stage adds the wrapper.
+%%   - Block (§3.3.1): zero or more statements, then an optional return.
+%%     An empty source is a valid chunk. A block has no value and is never
+%%     an operand or argument.
+%%   - Statement (§3.3): runs for effect, has no value. An expression
+%%     cannot stand as a statement; `1 + 2` on its own is a syntax error.
+%%   - Expression (§3.4): yields a value. Occurs only as an operand of a
+%%     statement or of another expression — singly, or as an explist:
+%%     expressions separated by commas (assignment right-hand side,
+%%     return, call arguments, generic for), always owned by its statement
+%%     or call, never free-standing.
+%%
+%% Two constructs appear in both positions: a function call (§3.3.6) — as
+%% a statement its results are discarded — and a function definition
+%% (§3.4.10) — `function f() end` is a statement, `function () end` is an
+%% expression.
+%%
+%% Lowering follows the split the parser already made: `stat` rules
+%% become statement Funs, `exp` rules become expression Funs.
+%%
+%% Lua:
+%%   function f(n)       -- statement: function definition; its body is a
+%%     return n * 2      --   block
+%%   end
+%%   g = function (n)    -- the same definition as an expression: a value
+%%     return n + 1      --   assigned to g
+%%   end
+%%   do                  -- block (§3.3.1): a sequence of statements; it
+%%                       --   has no value, cannot be an operand or argument
+%%     x = 1 + f(2)      -- statement: assign
+%%         ^^^^^^^^      -- expression: op; its operands 1 and f(2)
+%%     if x then         -- statement: if
+%%       print(x)        -- statement: a call, result discarded (§3.3.6)
+%%     end
+%%     y = print(x)      -- the same call as an expression: result kept
+%%   end
+%%
+%% =============================================================================
+%% END READ — Closure compilation and continuations
+%% =============================================================================
+%%
+%% =============================================================================
 %% TODO — Minimal viable default for Lua 5.2 (see www.lua.org/manual/5.2)
 %% =============================================================================
 %%
@@ -132,8 +207,7 @@
 %%
 %% Basic library (§6.1) — minimal set
 %% ----------------------------------
-%%   All are "standard library" per the manual; the standard does not define
-%%   "implementation default" separately. For minimal implementation we
+%%   All are "standard library" per the manual. For minimal implementation we
 %%   distinguish:
 %%   - Semantics-relevant: referenced in the manual's semantic description
 %%     (§2, §3 meaning of operations), not in lexical/grammar: type,
@@ -171,8 +245,6 @@
 %%     Host pulls bindings via next/1; no callback Fun needed.
 %%     This separates setup scope (iterator/1 + next/1) from runtime
 %%     (exec/3, exec/4).
-%%   - iterator/1 does NOT call exec/4: setup and runtime use different
-%%     mechanisms.
 %%   - Signature: iterator(Opts) -> iterator()
 %%       next(Iterator) -> {[key()], lua(), iterator()} | none
 %%       Opts = map with optional keys below
@@ -200,8 +272,7 @@
 %%     NOTES re. cell resolution).
 %%   - Scopes resolved during process/2 lowering: variable occurrences become
 %%     host API calls with Keys plus a Cell expression.
-%%   - Scope entrance allocates a lexical Cell in the compiled model; runtime
-%%     primitives do not mutate a threaded Cell/Frame.
+%%   - Scope entrance allocates a lexical Cell in the compiled model.
 %%   - Grammar: fix reduce conflicts if any; ref. Lua 5.2 manual §3.
 %%   - Evaluators for statements, expressions, literals: lowered closure
 %%     conversion.
@@ -303,7 +374,7 @@
 %% exec/4 sees only the final value and is too late to account for the work.
 %%
 %% Table constructor positioning rules:
-%%   - Assignment is not what gives a constructor dynamic shape. Evaluation is.
+%%   - Evaluation gives a constructor its shape.
 %%   - The syntactic field list count is known after parsing.
 %%   - Name fields, such as a = 1, have compile-time literal keys.
 %%   - Array fields, such as "x", "y", receive planned integer positions from
@@ -331,7 +402,12 @@
 %% =============================================================================
 -export([iterator/1, next/1, compile/2, eval/4, md5/1]).
 
--type code() :: string().
+-export_type([program/0]).
+
+-export_type([code/0, line/0, column/0]).
+-export_type([name/0, cell/0, key/0, lua/0, erl/0, command/0]).
+
+-type code() :: [byte()].
 
 -type offset() :: pos_integer().
 
@@ -631,18 +707,17 @@ next(_Iterator) ->
 %% ----------------------------------
 %% Closure overhead buys something useful: every statement closure is both
 %% executable code and a restart point. The continuation table stores references
-%% to existing closures; it does not duplicate program bodies.
+%% to existing closures.
 %%
-%% We do not need digraph/CFG metadata for the current use case. Control flow is
-%% already encoded by closure captures:
+%% Control flow is already encoded by closure captures:
 %%
 %%   statement closure -> captures Next continuation
 %%   if closure        -> chooses branch closure, both exit to same Next
 %%   loop closure      -> delegates to loop primitive or recursive driver
 %%
-%% Function identity is not used. BEAM fun identity and fun table indexes
-%% identify Erlang closure sites, not Lua commands. The interpreter-level
-%% identity is the source location used to find a continuation in Program.
+%% BEAM fun identity and fun table indexes identify Erlang closure sites, not
+%% Lua commands. The interpreter-level identity is the source location used to
+%% find a continuation in Program.
 %%
 %% Scope and storage contract
 %% --------------------------
@@ -652,7 +727,7 @@ next(_Iterator) ->
 %% needed cells and values.
 %%
 %% Index only commands/statements at first. Expression-level probing can be
-%% added later, but it is not needed for interrupted execution.
+%% added later.
 %%
 %% Ambiguous source positions should be rejected during compilation or resolved
 %% by an explicit statement-position rule. Do not use the Fun term itself as a
@@ -685,8 +760,7 @@ eval(_Line, _Column, _Program, _Runtime) ->
 %% Origin          | Engine Descriptor    | Normalized Descriptor (string)
 %% ----------------|----------------------|-------------------------------------
 %% Leex engine     | {illegal, Character} | "unexpected characters \"...\""
-%% Rule (Numbers)  | "illegal number"     | "illegal number"
-%% Rule (Floats)   | "malformed number"   | "malformed number"
+%% Rule (Numbers)  | "malformed number…"  | "malformed number near '...'"
 %% Rule (Strings)  | "illegal string"     | "illegal string"
 %% Rule (Names)    | "illegal name"       | "illegal name"
 %% Rule (Comments) | "unfinished ..."     | "unfinished long comment"
@@ -1038,13 +1112,6 @@ process([_|_] = Tree, _Module) ->
 %%   Parser currently returns block content directly. A closure compiler may
 %%   add an explicit chunk wrapper later.
 %%
-%% Primitive: stats, stat, explist, exp
-%% Lua:
-%%   -- internal grouping shapes
-%% Comment:
-%%   These are not direct parser tuple names in the current grammar. They are
-%%   reserved for possible later lowering/evaluator layers.
-%%
 %% Runtime implementation checklist from current parser:
 %%   var, assign, '.', key_field, nil, false, true, numeral, literalstring,
 %%   single, vararg, op, table, name_field, exp_field, block, local, return,
@@ -1063,8 +1130,8 @@ wrap(Tree) when is_list(Tree) ->
     [wrap(Stat) || Stat <- Tree];
 wrap({var, Line, Column, [Name]}) ->
     wrap(var, Line, Column, [Name]);
-wrap({assign, Line, Column, [Vars, nil]}) ->
-    wrap(assign, Line, Column, [Vars, nil]);
+%% Exps = [] for `local a, b` (no initialiser): every Var is assigned 'nil'
+%% (§3.3.3, §3.3.7). The explist adjustment pads short lists with 'nil'.
 wrap({assign, Line, Column, [Vars, Exps]}) ->
     wrap(assign, Line, Column, [Vars, Exps]);
 wrap({'.', Line, Column, [Head, {functioncall, FL, FC, [Args]}]}) ->
@@ -1097,10 +1164,9 @@ wrap({op, Line, Column, [Op, Right]}) ->
     wrap(op, Line, Column, [Op, Right]);
 wrap({op, Line, Column, [Op, Left, Right]}) ->
     wrap(op, Line, Column, [Op, Left, Right]);
-wrap({table, Line, Column, [nil]}) ->
-    wrap(table, Line, Column, [nil]);
-wrap({table, Line, Column, [Fields]}) ->
-    wrap(table, Line, Column, [Fields]);
+%% Fields = [] for `{}`: an empty table, no fields to evaluate (§3.4.8).
+wrap({table, Line, Column, Fields}) ->
+    wrap(table, Line, Column, Fields);
 wrap({name_field, Line, Column, [Name, Value]}) ->
     wrap(name_field, Line, Column, [Name, Value]);
 wrap({exp_field, Line, Column, [Value]}) ->
@@ -1162,48 +1228,46 @@ wrap(Primitive, Line, Column, Args) ->
 %% exec/4.
 %% -------------------------------------------------------------
 
-assert(If) ->
-    not falsy(If()).
-
-assert(If, IfBody) ->
-    case falsy(If()) of
+branch(If, IfBody) ->
+    case test(If()) of
         true ->
-            false;
-        false ->
-            IfBody()
-    end.
-
-assert(If, IfBody, ElseBody) ->
-    case falsy(If()) of
-        false ->
             IfBody();
-        true ->
-            ElseBody()
-    end.
-
-assert(If, IfBody, Else, ElseBody) ->
-    case falsy(assert(If, IfBody)) of
-        false ->
-            true;
-        true ->
-            assert(Else, ElseBody)
-    end.
-
-repeat(Body, Until) ->
-    Body(),
-    case falsy(Until()) of
-        true ->
-            repeat(Body, Until);
-        false ->
+        _Res ->
             false
     end.
 
-falsy(V) ->
-    (V == false) orelse (V == 'nil').
+branch(If, IfBody, ElseBody) ->
+    case test(If()) of
+        true ->
+            IfBody();
+        _Res ->
+            ElseBody()
+    end.
+
+branch(If, IfBody, Else, ElseBody) ->
+    case test(branch(If, IfBody)) of
+        true ->
+            true;
+        _Res ->
+            branch(Else, ElseBody)
+    end.
+
+repeat(Body, Until) -> 
+    Body(),
+    
+    case test(Until()) of
+        false ->
+            repeat(Body, Until);
+        _Res ->
+            true
+    end.
+
+test(V) ->
+    (V /= false) andalso (V /= 'nil').
 
 %% TODO Assign does invocation of exec/4
 
-assign([Var], [Val]) ->
+assign([Var], [Val|_]) ->
     Var(Val);
 assign([Var], []) ->
     Var('nil');
@@ -1211,6 +1275,7 @@ assign([Var|T], []) ->
     Var('nil'), assign(T, []);
 assign([Var|T], [Val|Acc]) ->
     Var(Val), assign(T, Acc).
+
 assign(Module, Vars, Vals)
         when is_atom(Module), is_list(Vars), is_list(Vals) ->
     assign(Vars, Vals).
@@ -1929,8 +1994,7 @@ exp(_Module, _Node) ->
 %%   next(Iterator) -> {[key()], lua(), iterator()} | none.
 %%   Host pulls standard bindings (type, pairs, ipairs, pcall, next, rawget,
 %%   rawset, getmetatable, setmetatable, ...) one at a time via next/1.
-%%   iterator/1 does NOT call exec/4 — different mechanism for different
-%%   phase:
+%%   Different mechanism for different phase:
 %%     setup:   iterator/1 + next/1 (pull-based, host drives, no scoping)
 %%     runtime: exec/3, exec/4 (scoped by Name/Cell/Keys, called repeatedly)
 %%   Naming: iterator/1 is a constructor, next/1 is the step function.
@@ -2074,10 +2138,10 @@ exp(_Module, _Node) ->
 %%   Cursor
 %%     The host holds the command() reference between interpreter calls. It is
 %%     the execution pointer: after eval/4 returns, the host owns the current
-%%     position in the program. On resume the host passes the command() directly.
-%%     No lookup or position resolution is needed — the interpreter receives the
-%%     callable and invokes it. The interpreter is stateless; the cursor lives in
-%%     the host.
+%%     position in the program. On resume the host passes the command()
+%%     directly. No lookup or position resolution is needed — the interpreter
+%%     receives the callable and invokes it. The interpreter is stateless; the
+%%     cursor lives in the host.
 %%
 %%   Capability token
 %%     The identity of the command() tells the host which effect is about to be
@@ -2095,14 +2159,14 @@ exp(_Module, _Node) ->
 %%
 %%   Gate exec/4 by cursor identity
 %%     exec/3 is a read; exec/4 is a write. Reads are unconditionally safe to
-%%     re-execute. Writes should be gated: the host tracks which cursor positions
-%%     have already produced committed writes. If the cursor's write is already
-%%     in the committed record, the host exec/4 implementation returns without
-%%     applying the effect again. The command() identity — recorded by
-%%     {Line, Column} in the host's own log — is the idempotency key for exec/4.
-%%     This is the host's responsibility; the interpreter always calls exec/4
-%%     when lowered code reaches a write; the host implementation absorbs the
-%%     idempotency check.
+%%     re-execute. Writes should be gated: the host tracks which cursor
+%%     positions have already produced committed writes. If the cursor's write
+%%     is already in the committed record, the host exec/4 implementation
+%%     returns without applying the effect again. The command() identity —
+%%     recorded by {Line, Column} in the host's own log — is the idempotency
+%%     key for exec/4. This is the host's responsibility; the interpreter
+%%     always calls exec/4 when lowered code reaches a write; the host
+%%     implementation absorbs the idempotency check.
 %%
 %%   Defer
 %%     The host may hold the command() and decide when to invoke it: budget
@@ -2343,6 +2407,6 @@ exp(_Module, _Node) ->
 %% END NOTES
 %% =============================================================================
 
--spec md5(code()) -> <<_:_*16>>.
+-spec md5(code()) -> <<_:256>>.
 md5(Code) ->
     binary:encode_hex(_Md5 = erlang:md5(Code)).
